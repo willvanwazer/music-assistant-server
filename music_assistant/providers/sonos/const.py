@@ -88,4 +88,4 @@ NON_HIRES_MODELS = (
 # it reads the queue again. The previous item keeps skip-back working. The speaker's own
 # sizes are never exceeded.
 PREVIOUS_ITEMS = 1
-UPCOMING_ITEMS = 10
+UPCOMING_ITEMS = 50

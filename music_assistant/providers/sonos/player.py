@@ -751,7 +751,7 @@ class SonosPlayer(Player):
         # get_next_item accounts for repeat mode, so this is the item that will really
         # play next rather than whatever sits at the next index
         last_index: int | str = center_index
-        for _ in range(min(UPCOMING_ITEMS, max_upcoming)):
+        for _ in range(UPCOMING_ITEMS):  # probe: ignore the speaker ceiling
             next_item = self.mass.player_queues.get_next_item(queue_id, last_index)
             if next_item is None:
                 break
