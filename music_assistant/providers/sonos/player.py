@@ -765,15 +765,12 @@ class SonosPlayer(Player):
         self._attr_elapsed_time = active_group.position
 
         # figure out the active source based on the container
-        container_type = active_group.container_type
-        active_service = active_group.active_service
+        # aiosonos also returns raw strings for container types outside its enum.
+        container_type = cast("str | None", active_group.container_type)
+        active_service: str | None = active_group.active_service
         container = active_group.playback_metadata.get("container")
-        if (
-            not active_service
-            and container
-            and container.get("service", {}).get("id") == MusicService.MUSIC_ASSISTANT
-        ):
-            active_service = MusicService.MUSIC_ASSISTANT
+        if not active_service and container:
+            active_service = container.get("service", {}).get("id")
         if container_type == ContainerType.LINEIN:
             self._attr_active_source = SOURCE_LINE_IN
         elif container_type in (ContainerType.HOME_THEATER_HDMI, ContainerType.HOME_THEATER_SPDIF):
@@ -791,7 +788,7 @@ class SonosPlayer(Player):
             # add radio to source list if not yet there
             if SOURCE_RADIO not in [x.id for x in self._attr_source_list]:
                 self._attr_source_list.append(PLAYER_SOURCE_MAP[SOURCE_RADIO])
-        elif active_service == MusicService.SPOTIFY:
+        elif active_service == MusicService.SPOTIFY or container_type == "spotify.connect":
             self._attr_active_source = SOURCE_SPOTIFY
             # add spotify to source list if not yet there
             if SOURCE_SPOTIFY not in [x.id for x in self._attr_source_list]:

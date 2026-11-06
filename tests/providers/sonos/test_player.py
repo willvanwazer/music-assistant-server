@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -331,6 +332,43 @@ def test_a_paused_connect_session_is_handed_to_the_stale_source_check() -> None:
     # so the speaker only has to opt in and let the state calculation see it
     assert player._attr_external_pause_idle_timeout == EXTERNAL_PAUSE_IDLE_TIMEOUT
     player.update_state.assert_called_once()  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize(
+    ("container_type", "service"),
+    [
+        ("spotify.connect", {"name": "Spotify"}),
+        ("playlist", {"id": "9", "name": "Spotify"}),
+    ],
+)
+@pytest.mark.parametrize(
+    "playback_state",
+    [SonosPlayBackState.PLAYBACK_STATE_PLAYING, SonosPlayBackState.PLAYBACK_STATE_PAUSED],
+)
+def test_spotify_without_container_id_retains_transport_controls(
+    container_type: str, service: dict[str, str], playback_state: SonosPlayBackState
+) -> None:
+    """A Connect container without id.serviceId still supports pause and track skipping."""
+    player, _ = _speaker_reporting_paused_spotify()
+    group = cast("MagicMock", player.client.player.group)
+    group.active_service = None
+    group.container_type = container_type
+    group.playback_state = playback_state
+    group.playback_metadata["container"] = {
+        "type": container_type,
+        "name": "Spotify",
+        "service": service,
+    }
+
+    player.on_player_event(None)
+
+    assert player._attr_active_source == SOURCE_SPOTIFY
+    source = next(x for x in player._attr_source_list if x.id == player._attr_active_source)
+    assert source.can_play_pause
+    assert source.can_next_previous
+    assert player._attr_current_media is not None
+    assert player._attr_current_media.title == "Shout"
+    assert player._attr_playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
 
 
 def test_the_player_coordinates_the_announcement_start() -> None:
