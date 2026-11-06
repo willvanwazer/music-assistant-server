@@ -13,7 +13,8 @@ LAN administration is disabled unless `MASS_LAN_ADMIN_NETWORKS` contains explici
 `MASS_LAN_ADMIN_HOSTS` must list exact allowed host:port values. An optional comma-separated
 `MASS_LAN_ADMIN_PROXIES` lists individual edge proxy IPs; each must overwrite
 X-Forwarded-For with its actual client address. Proxy chains are deliberately rejected.
-The NAS production server uses direct host networking and no trusted proxies.
+The NAS trusts its TSDProxy instance for its private HTTPS hostname; direct LAN access
+uses host networking. Tailscale CIDRs must be explicitly enabled for remote private access.
 
 Set `MASS_LAN_ADMIN_USER_ID` to use an existing administrator account for automatic login.
 The account must exist, be enabled and retain its administrator role; otherwise automatic
