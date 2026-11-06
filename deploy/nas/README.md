@@ -15,9 +15,12 @@ LAN administration is disabled unless `MASS_LAN_ADMIN_NETWORKS` contains explici
 X-Forwarded-For with its actual client address. Proxy chains are deliberately rejected.
 The NAS production server uses direct host networking and no trusted proxies.
 
-An enabled installation creates a persistent Home LAN administrator with no password.
+Set `MASS_LAN_ADMIN_USER_ID` to use an existing administrator account for automatic login.
+The account must exist, be enabled and retain its administrator role; otherwise automatic
+login is denied. It is never recreated or promoted. Without this setting, an enabled
+installation creates a persistent Home LAN administrator with no password.
 HTTP requests and explicit `auth` WebSocket commands with `trusted_network: true` are
 checked against the socket peer, allowed host and browser origin. No bearer token is
 issued or stored by this automatic login. Explicit token sessions retain their own role;
-non-LAN requests continue to require authentication. Disabling the Home LAN user prevents
+untrusted requests continue to require authentication. Disabling the selected user prevents
 new LAN sessions; removing the environment settings and restarting disables the feature.

@@ -158,7 +158,9 @@ class AuthenticationManager:
 
         self._has_users = await self._has_non_system_users()
 
-        if self.trusted_network.enabled:
+        if self.trusted_network.enabled and self.trusted_network.user_id:
+            self._lan_admin_id = self.trusted_network.user_id
+        elif self.trusted_network.enabled:
             row = await self.database.get_row("settings", {"key": "lan_admin_user_id"})
             if row:
                 self._lan_admin_id = str(row["value"])

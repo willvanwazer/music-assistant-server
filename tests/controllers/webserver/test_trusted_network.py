@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 @pytest.fixture
 def _lan_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Enable the test LAN and one explicitly trusted edge proxy."""
+    monkeypatch.delenv("MASS_LAN_ADMIN_USER_ID", raising=False)
     monkeypatch.setenv("MASS_LAN_ADMIN_NETWORKS", "10.1.0.0/24")
     monkeypatch.setenv("MASS_LAN_ADMIN_PROXIES", "172.31.97.2")
     monkeypatch.setenv("MASS_LAN_ADMIN_HOSTS", "10.1.0.10:8097,10.1.0.10:8095")
@@ -135,6 +136,70 @@ async def test_disabled_user_is_not_reenabled(auth_manager: AuthenticationManage
     assert user is not None
     await auth_manager.database.update("users", {"user_id": user.user_id}, {"enabled": False})
     assert await auth_manager.authenticate_trusted_network(_request("10.1.0.42")) is None
+
+
+async def test_configured_identity_preserves_existing_account(
+    auth_manager: AuthenticationManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Select an existing account on restart without replacing its preferences or tokens."""
+    user = await auth_manager.create_user(username="will", role=UserRole.ADMIN, display_name="Will")
+    await auth_manager.update_user_preferences(user, {"test_preference": "preserved"})
+    monkeypatch.setenv("MASS_LAN_ADMIN_USER_ID", user.user_id)
+    await auth_manager.close()
+    auth_manager.trusted_network = TrustedNetworkPolicy()
+    await auth_manager.setup()
+    resolved = await auth_manager.authenticate_trusted_network(_request("10.1.0.42"))
+    assert resolved is not None
+    assert resolved.user_id == user.user_id
+    assert resolved.display_name == "Will"
+    assert resolved.preferences == {"test_preference": "preserved"}
+    assert len(await auth_manager.database.get_rows("users")) == 2
+    assert await auth_manager.database.get_rows("auth_tokens") == []
+    await auth_manager.database.update("users", {"user_id": user.user_id}, {"enabled": False})
+    assert await auth_manager.authenticate_trusted_network(_request("10.1.0.42")) is None
+
+
+@pytest.mark.parametrize("identity", ["missing", "non_admin"])
+async def test_invalid_configured_identity_has_no_fallback(
+    auth_manager: AuthenticationManager, monkeypatch: pytest.MonkeyPatch, identity: str
+) -> None:
+    """A missing or non-admin target cannot fall back to the generated administrator."""
+    user_id = "missing-user"
+    if identity == "non_admin":
+        user = await auth_manager.create_user(username="listener", role=UserRole.USER)
+        user_id = user.user_id
+    monkeypatch.setenv("MASS_LAN_ADMIN_USER_ID", user_id)
+    await auth_manager.close()
+    auth_manager.trusted_network = TrustedNetworkPolicy()
+    await auth_manager.setup()
+    assert await auth_manager.authenticate_trusted_network(_request("10.1.0.42")) is None
+
+
+@pytest.mark.parametrize(
+    ("peer", "headers", "allowed"),
+    [
+        ("172.31.97.2", {"X-Forwarded-For": "100.100.20.30"}, True),
+        ("172.31.97.2", {"X-Forwarded-For": "fd7a:115c:a1e0::1"}, True),
+        ("172.31.97.2", {"X-Forwarded-For": "198.51.100.1"}, False),
+        ("172.31.97.3", {"X-Forwarded-For": "100.100.20.30"}, False),
+        ("172.31.97.2", {"X-Forwarded-For": "198.51.100.1, 100.100.20.30"}, False),
+        (
+            "172.31.97.2",
+            {"X-Forwarded-For": "100.100.20.30", "Origin": "https://evil.example"},
+            False,
+        ),
+    ],
+)
+@pytest.mark.usefixtures("_lan_env")
+def test_opt_in_tailnet_proxy(
+    monkeypatch: pytest.MonkeyPatch, peer: str, headers: dict[str, str], allowed: bool
+) -> None:
+    """Only the named proxy can attest a Tailnet client for the HTTPS hostname."""
+    host = "music-assistant.example.ts.net"
+    monkeypatch.setenv("MASS_LAN_ADMIN_NETWORKS", "10.1.0.0/24,100.64.0.0/10,fd7a:115c:a1e0::/48")
+    monkeypatch.setenv("MASS_LAN_ADMIN_HOSTS", host)
+    request = _request(peer, {"Host": host, "Origin": f"https://{host}", **headers})
+    assert TrustedNetworkPolicy().allows(request) is allowed
 
 
 @pytest.mark.parametrize("peer", ["10.1.0.42", "198.51.100.1"])

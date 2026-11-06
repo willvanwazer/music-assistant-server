@@ -16,6 +16,7 @@ class TrustedNetworkPolicy:
 
     def __init__(self) -> None:
         """Read operator-controlled settings once when the server starts."""
+        self.user_id = os.environ.get("MASS_LAN_ADMIN_USER_ID", "").strip() or None
         self.networks = tuple(
             ip_network(value.strip())
             for value in os.environ.get("MASS_LAN_ADMIN_NETWORKS", "").split(",")
