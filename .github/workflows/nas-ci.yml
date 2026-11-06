@@ -20,9 +20,9 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
-      - name: Build custom server without upstream app credentials
+      - name: Build fork on the pinned official runtime
         run: bash deploy/nas/build.sh ma-server:test
-      - name: Verify installed version and absence of bundled app credentials
+      - name: Verify fork version and trusted-network module
         run: >-
           docker run --rm --entrypoint python ma-server:test -c
-          'import importlib.metadata, importlib.resources; print(importlib.metadata.version("music-assistant")); assert not (importlib.resources.files("music_assistant.helpers") / "app_secrets.json").is_file()'
+          'import importlib.metadata; from music_assistant.controllers.webserver.helpers.trusted_network import TrustedNetworkPolicy; assert "+g" in importlib.metadata.version("music-assistant"); assert not TrustedNetworkPolicy().enabled'

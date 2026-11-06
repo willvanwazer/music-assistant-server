@@ -173,6 +173,14 @@ class MilkdropRelay:
             auth_data = loads(msg.data)
         except ValueError:
             return await reject(b"Invalid JSON in auth message")
+        if (
+            auth_data.get("type") == "auth"
+            and not auth_data.get("token")
+            and auth_data.get("trusted_network") is True
+            and await self.mass.webserver.auth.authenticate_trusted_network(request)
+        ):
+            await ws.send_str('{"type": "auth_ok"}')
+            return True
         if auth_data.get("type") != "auth" or not (token := auth_data.get("token")):
             return await reject(b"First message must be auth with a token")
         if await self.mass.webserver.auth.authenticate_with_token(token) is None:

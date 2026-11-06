@@ -408,6 +408,21 @@ class WebsocketClientHandler:
         token = msg.args.get("token") if msg.args else None
         if not token:
             token = msg.args.get("access_token") if msg.args else None
+        if not token and msg.args and msg.args.get("trusted_network") is True:
+            user = await self.webserver.auth.authenticate_trusted_network(self.request)
+            if user:
+                self._authenticated_user = user
+                self._current_token = None
+                self._token_id = None
+                await self._send_message(
+                    SuccessResultMessage(
+                        msg.message_id,
+                        {"authenticated": True, "user": user.to_dict()},
+                    )
+                )
+                self._subscribe_to_events()
+                self.webserver.register_websocket_client(self)
+                return
         if not token:
             await self._send_message(
                 ErrorResultMessage(
@@ -432,7 +447,11 @@ class WebsocketClientHandler:
             return
 
         # Security: Deny homeassistant system user on regular (non-Ingress) webserver
-        if not self._is_ingress and user.username == HOMEASSISTANT_SYSTEM_USER:
+        if (
+            not self._is_ingress
+            and user.username == HOMEASSISTANT_SYSTEM_USER
+            and not self.webserver.auth.trusted_network.allows(self.request)
+        ):
             await self._send_message(
                 ErrorResultMessage(
                     msg.message_id,

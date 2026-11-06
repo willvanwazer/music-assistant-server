@@ -74,7 +74,7 @@ class SendspinProxyHandler:
         else:
             # Regular auth via first message
             try:
-                user = await self._authenticate(wsock)
+                user = await self._authenticate(wsock, request)
                 if not user:
                     return wsock
             except TimeoutError:
@@ -122,11 +122,14 @@ class SendspinProxyHandler:
 
         return wsock
 
-    async def _authenticate(self, wsock: web.WebSocketResponse) -> User | None:
+    async def _authenticate(
+        self, wsock: web.WebSocketResponse, request: web.Request | None = None
+    ) -> User | None:
         """
         Wait for and validate authentication message.
 
         :param wsock: The client WebSocket connection.
+        :param request: The request whose socket may authorize LAN administration.
         :return: The authenticated user, or None if authentication failed.
         """
         async with asyncio.timeout(10):
@@ -147,6 +150,11 @@ class SendspinProxyHandler:
             return None
 
         token = auth_data.get("token")
+        if not token and auth_data.get("trusted_network") is True and request is not None:
+            user = await self.webserver.auth.authenticate_trusted_network(request)
+            if user:
+                await wsock.send_str('{"type": "auth_ok"}')
+                return user
         if not token:
             await wsock.close(code=4001, message=b"Token required in auth message")
             return None

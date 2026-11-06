@@ -300,7 +300,7 @@ class WebserverController(CoreController):
         # work out all routes
         routes: list[tuple[str, str, Callable[[web.Request], Awaitable[web.StreamResponse]]]] = []
         # frontend routes
-        frontend_dir = locate_frontend()
+        frontend_dir = os.environ.get("MASS_FRONTEND_DIR") or locate_frontend()
         for filename in next(os.walk(frontend_dir))[2]:
             if filename.endswith(".py"):
                 continue

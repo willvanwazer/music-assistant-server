@@ -60,7 +60,11 @@ from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.jwt_auth import JWTHelper
 from music_assistant.helpers.redirect_validation import is_allowed_redirect_url
 
+from .helpers.trusted_network import TrustedNetworkPolicy
+
 if TYPE_CHECKING:
+    from aiohttp import web
+
     from music_assistant.controllers.webserver import WebserverController
     from music_assistant.providers.hass import HomeAssistantProvider
 
@@ -119,6 +123,8 @@ class AuthenticationManager:
         self.login_providers: dict[str, LoginProvider] = {}
         self.logger = LOGGER
         self._has_users: bool = False
+        self.trusted_network = TrustedNetworkPolicy()
+        self._lan_admin_id: str | None = None
         self.jwt_helper: JWTHelper = None  # type: ignore[assignment]
         self._join_code_rate_limiter = LoginRateLimiter(subject="client")
         self._join_code_global_rate_limiter = LoginRateLimiter(
@@ -152,6 +158,23 @@ class AuthenticationManager:
 
         self._has_users = await self._has_non_system_users()
 
+        if self.trusted_network.enabled:
+            row = await self.database.get_row("settings", {"key": "lan_admin_user_id"})
+            if row:
+                self._lan_admin_id = str(row["value"])
+            else:
+                user = await self.create_user(
+                    username=f"lan_admin_{secrets.token_hex(4)}",
+                    role=UserRole.ADMIN,
+                    display_name="Home LAN",
+                )
+                self._lan_admin_id = user.user_id
+                await self.database.insert_or_replace(
+                    "settings",
+                    {"key": "lan_admin_user_id", "value": user.user_id, "type": "string"},
+                )
+                await self.database.commit()
+
         # migrate the Home Assistant system user of pre-existing installs to the service role
         await self._migrate_system_user_role()
 
@@ -173,6 +196,15 @@ class AuthenticationManager:
     def has_users(self) -> bool:
         """Check if any users exist in the system."""
         return self._has_users
+
+    async def authenticate_trusted_network(self, request: web.Request) -> User | None:
+        """Resolve a password-free administrator for this request only."""
+        if not self._lan_admin_id or not self.trusted_network.allows(request):
+            return None
+        user = await self.get_user(self._lan_admin_id)
+        if not user or not user.enabled or user.role != UserRole.ADMIN:
+            return None
+        return user
 
     async def authenticate_with_credentials(
         self, provider_id: str, credentials: dict[str, Any]

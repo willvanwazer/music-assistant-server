@@ -169,7 +169,9 @@ async def get_authenticated_user(request: web.Request) -> User | None:
     # Try to authenticate from Authorization header
     auth_header = request.headers.get("Authorization")
     if not auth_header:
-        return None
+        user = await mass.webserver.auth.authenticate_trusted_network(request)
+        request[USER_CONTEXT_KEY] = user
+        return user
 
     # Expected format: "Bearer <token>"
     parts = auth_header.split(" ", 1)
@@ -182,7 +184,11 @@ async def get_authenticated_user(request: web.Request) -> User | None:
     user = await mass.webserver.auth.authenticate_with_token(token)
     if user:
         # Security: Deny homeassistant system user on regular (non-Ingress) webserver
-        if not is_request_from_ingress(request) and user.username == HOMEASSISTANT_SYSTEM_USER:
+        if (
+            not is_request_from_ingress(request)
+            and user.username == HOMEASSISTANT_SYSTEM_USER
+            and not mass.webserver.auth.trusted_network.allows(request)
+        ):
             # Reject system user on regular webserver (should only use Ingress server)
             return None
 
