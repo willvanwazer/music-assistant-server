@@ -74,9 +74,8 @@ async def auth_manager(
         ("10.1.0.42", {"Sec-Fetch-Site": "cross-site"}, False),
     ],
 )
-def test_request_boundary(
-    _lan_env: None, peer: str, headers: dict[str, str], allowed: bool
-) -> None:
+@pytest.mark.usefixtures("_lan_env")
+def test_request_boundary(peer: str, headers: dict[str, str], allowed: bool) -> None:
     """Only the configured subnet, edge and same-origin browser requests qualify."""
     assert TrustedNetworkPolicy().allows(_request(peer, headers)) is allowed
 
@@ -87,7 +86,8 @@ def test_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     assert not TrustedNetworkPolicy().allows(_request("10.1.0.42"))
 
 
-def test_missing_hosts_fails_closed(_lan_env: None, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.usefixtures("_lan_env")
+def test_missing_hosts_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
     """Enabling the feature requires a host allowlist against DNS rebinding."""
     monkeypatch.delenv("MASS_LAN_ADMIN_HOSTS")
     with pytest.raises(ValueError, match="HOSTS"):
