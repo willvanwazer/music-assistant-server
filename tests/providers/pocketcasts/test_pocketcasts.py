@@ -310,6 +310,42 @@ async def test_special_folder_episodes_use_the_name_from_the_payload(
     client.get_podcast.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    ("status", "resume_ms", "fully_played"),
+    [
+        ({"playedUpTo": 120, "playingStatus": 2}, 120000, False),
+        ({"playedUpTo": 600, "playingStatus": 3}, 0, True),
+        ({}, None, None),
+    ],
+)
+async def test_special_folder_preserves_episode_progress(
+    provider: PocketCastsProvider,
+    client: AsyncMock,
+    status: dict[str, int],
+    resume_ms: int | None,
+    fully_played: bool | None,
+) -> None:
+    """Browse keeps known progress without treating missing status as an unplayed episode."""
+    client.get_in_progress_episodes.return_value = [
+        {
+            "uuid": "episode-1",
+            "title": "Episode 1",
+            "duration": 600,
+            "podcastUuid": "podcast-1",
+            "podcastTitle": "Podcast One",
+            **status,
+        }
+    ]
+
+    items = await provider.browse("pocketcasts://in_progress")
+
+    episode = next(item for item in items if isinstance(item, PodcastEpisode))
+    assert episode.resume_position_ms == resume_ms
+    assert episode.fully_played is fully_played
+    client.get_podcast.assert_not_called()
+    client.get_history.assert_not_called()
+
+
 async def test_special_folder_looks_each_podcast_up_once(
     provider: PocketCastsProvider, client: AsyncMock
 ) -> None:

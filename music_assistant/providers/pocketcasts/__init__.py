@@ -672,6 +672,10 @@ class PocketCastsProvider(MusicProvider):
                 show_notes=None,
                 podcast_name=podcast_name or names.get(podcast_uuid, ""),
             ):
+                if "playedUpTo" in episode_data or "playingStatus" in episode_data:
+                    self._enrich_episode_with_status(
+                        episode_item, episode_data, {episode_data.get("uuid"): episode_data}, {}
+                    )
                 items.append(episode_item)
         return items
 
