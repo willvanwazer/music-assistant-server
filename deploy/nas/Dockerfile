@@ -47,7 +47,6 @@ COPY --from=cliairplay-download /cliairplay /cliairplay
 FROM ghcr.io/music-assistant/base:$BASE_IMAGE_VERSION AS builder
 ARG TARGETARCH
 
-COPY --from=package /src/dist dist
 COPY requirements_all.txt .
 
 # miniaudio has no Linux arm64 wheels, so pyatv requires a source build there.
@@ -77,7 +76,7 @@ RUN uv venv $VIRTUAL_ENV
 # https://docs.astral.sh/uv/pip/compatibility/#packages-that-exist-on-multiple-indexes
 # Keep urllib3-future from hijacking the urllib3 namespace (see pyproject.toml).
 ENV URLLIB3_NO_OVERRIDE=1
-RUN uv pip install \
+RUN --mount=type=cache,target=/root/.cache/uv uv pip install \
     --index-strategy unsafe-best-match \
     --no-binary urllib3-future \
     -r requirements_all.txt
@@ -93,10 +92,11 @@ RUN REQUIRED_VERSION=$($VIRTUAL_ENV/bin/python -c "import importlib.metadata; pr
     fi && \
     uv pip install --force-reinstall --no-deps /usr/local/share/pyav-wheels/av*.whl
 
-# Install Music Assistant from prebuilt wheel
+# Install the application after the reusable dependency layers.
+COPY --from=package /src/dist dist
 ARG MASS_VERSION
 RUN uv pip install \
-    --no-cache \
+    --no-cache --no-deps \
     "music-assistant@dist/music_assistant-${MASS_VERSION}-py3-none-any.whl"
 
 COPY --from=cliairplay /cliairplay /tmp/cliairplay
@@ -110,14 +110,6 @@ RUN SITE_PACKAGES="$("$VIRTUAL_ENV/bin/python" -c \
 
 # Pre-compile Python bytecode for faster startup
 RUN $VIRTUAL_ENV/bin/python -m compileall -q $VIRTUAL_ENV/lib/python*/site-packages/music_assistant
-
-# we need to set (very permissive) permissions to the workdir
-# and /tmp to allow running the container as non-root
-# IMPORTANT: chmod here, NOT on the final image, to avoid creating extra layers and increase size!
-#
-RUN chmod -R 777 /app \
-    && chmod 755 \
-        "$VIRTUAL_ENV"/lib/python*/site-packages/music_assistant/providers/airplay/bin/cliairplay-linux-*
 
 ##################################################################################################
 
