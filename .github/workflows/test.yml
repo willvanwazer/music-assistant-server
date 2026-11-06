@@ -117,9 +117,11 @@ jobs:
       - name: Install dependencies
         # --index-strategy: allow PyPI packages when also using the PyTorch extra index
         # https://docs.astral.sh/uv/pip/compatibility/#packages-that-exist-on-multiple-indexes
-        run: uv pip install --system --index-strategy unsafe-best-match . .[test] -r requirements_all.txt
+        run: |
+          uv venv
+          uv pip install --python .venv/bin/python --index-strategy unsafe-best-match . .[test] -r requirements_all.txt
       - name: Lint/test with pre-commit
-        run: SKIP=no-commit-to-branch pre-commit run --all-files
+        run: UV_NO_SYNC=1 SKIP=no-commit-to-branch .venv/bin/pre-commit run --all-files
 
   test:
     needs: changes
@@ -204,7 +206,7 @@ jobs:
             env HOME=/home/tester \
             pytest -p numpy -n auto --dist loadfile --max-worker-restart=0 --durations 10 $cov --cov-report=term-missing --cov-report=xml $targets
       - name: Upload coverage to Codecov
-        if: ${{ !github.event.pull_request.head.repo.fork }}
+        if: ${{ github.repository_owner == 'music-assistant' && !github.event.pull_request.head.repo.fork }}
         uses: codecov/codecov-action@v7
         with:
           files: ./coverage.xml

@@ -1,0 +1,7 @@
+.git
+.venv
+dist
+*.egg-info
+**/__pycache__
+**/app_secrets.json
+**/app_vars.json
