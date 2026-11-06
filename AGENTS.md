@@ -78,7 +78,8 @@ Private methods should be at the bottom of the file, public at the top.
 
 ## Branching and PRs
 
-- All PRs target `dev` (primary development branch). `stable` is for production releases.
+- In this fork (`willvanwazer/music-assistant-server`), use short-lived branches and target `main`. Successful `NAS CI` push runs are picked up automatically by `willvanwazer/nas-stacks`. The current custom backend target is an isolated NAS preview; the production HA server remains official until provider credentials and data are migrated.
+- For contributions to upstream `music-assistant/server`, target `dev`; upstream `stable` is for production releases.
 - PRs labeled `bugfix` + `backport-to-stable` are automatically backported to `stable` — use only for bugs also present in `stable`.
 - Backporting a **schema change** permanently diverges `DB_SCHEMA_VERSION` between the branches and needs an extra dev-side guard migration; see `music_assistant/controllers/music/README.md`.
 
