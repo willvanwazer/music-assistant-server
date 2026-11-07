@@ -307,4 +307,5 @@ class PlaylistFoldersController:
 
     def _notify(self, user_id: str) -> None:
         # Broadcast only an invalidation key; folder names and contents stay user-scoped.
-        self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, f"playlist_folders://{user_id}", {})
+        uri = f"playlist_folders://{user_id}"
+        self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, uri, {"uri": uri})

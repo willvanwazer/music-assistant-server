@@ -168,8 +168,9 @@ transport envelopes follow the server's existing command API behavior.
 ## Change notifications
 
 After each successful mutation the server emits a standard `media_item_updated` event with
-`object_id: "playlist_folders://<authenticated-user-id>"` and `data: {}`. It contains
-**no folder metadata**.
+`object_id: "playlist_folders://<authenticated-user-id>"` and
+`data: {"uri": "playlist_folders://<authenticated-user-id>"}`. The nonempty URI lets
+existing media-item listeners ignore the event safely. It contains **no folder metadata**.
 Clients belonging to that user should refetch `list` and their active `items` page. On reconnect
 or focus, refetch to recover missed events. Normal playlist deletion/change events may also
 require refreshing folder counts and previews.
