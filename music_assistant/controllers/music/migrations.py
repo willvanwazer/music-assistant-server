@@ -40,6 +40,7 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.music.constants import DB_SCHEMA_VERSION
 from music_assistant.controllers.music.media.genres import GenreController
+from music_assistant.controllers.music.playlist_folders import create_playlist_folder_tables
 from music_assistant.helpers.json import json_dumps, json_loads, serialize_to_json
 from music_assistant.helpers.lyrics import normalize_lrc_lyrics
 
@@ -1001,6 +1002,9 @@ async def migrate_database(  # noqa: PLR0915
         except Exception as err:
             if "duplicate column" not in str(err):
                 raise
+
+    if prev_version <= 58:
+        await create_playlist_folder_tables(database)
 
     # NOTE: this genre restore runs after the <= 50 step on purpose: it inserts genres
     # with the current code/schema, so the external_ids column must be gone first.

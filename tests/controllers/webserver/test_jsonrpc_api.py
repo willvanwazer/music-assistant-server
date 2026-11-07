@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from music_assistant_models.errors import MediaNotFoundError
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.controllers.webserver.controller import WebserverController
@@ -82,3 +83,24 @@ async def test_invalid_json_is_rejected_without_logging_it(
     assert response.status == 400
     assert response.text == "Invalid JSON"
     assert "made-up-password" not in caplog.text
+
+
+async def test_missing_media_returns_not_found(webserver: WebserverController) -> None:
+    """Missing library items and private folders return a useful HTTP error."""
+
+    async def missing_folder() -> None:
+        raise MediaNotFoundError("Playlist folder not found")
+
+    webserver.auth = MagicMock(has_users=True)
+    webserver.mass.command_handlers["test/missing_folder"] = APICommandHandler.parse(
+        "test/missing_folder", missing_folder, authenticated=False
+    )
+    request = MagicMock(
+        can_read_body=True,
+        remote="127.0.0.1",
+        headers={},
+        read=AsyncMock(return_value=b'{"message_id":"1","command":"test/missing_folder"}'),
+    )
+    response = await webserver._handle_jsonrpc_api_command(request)
+    assert response.status == 404
+    assert response.text == "Playlist folder not found"

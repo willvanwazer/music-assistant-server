@@ -48,3 +48,7 @@ For local development you provide the system dependencies yourself — **Python 
 ---
 
 [![A project from the Open Home Foundation](https://www.openhomefoundation.org/badges/ohf-project.png)](https://www.openhomefoundation.org/)
+
+## Fork API additions
+
+- [Playlist folders API](docs/api/playlist-folders.md): per-user organization, sidebar pins, and atomic playlist moves over HTTP and WebSocket.

@@ -33,3 +33,7 @@ Renumbering the stable backport to match dev's number does not fix it either: th
 ## Future Enhancements
 
 - Isolate the database connection itself into a dedicated layer (e.g. its own sub-controller), so connection ownership and the SQL/query surface live behind one boundary instead of on `MusicController`. Splitting the migrations (`migrations.py`) and grouping setup in `MusicDatabaseSetupMixin` are first steps toward that; the connection (`_database` and the `database` property) currently still lives on `MusicController`.
+
+## Playlist folders
+
+User-owned folders group library playlists across providers. See the [Playlist folders API](../../../docs/api/playlist-folders.md) for HTTP/WebSocket commands, scopes, examples and error behavior.

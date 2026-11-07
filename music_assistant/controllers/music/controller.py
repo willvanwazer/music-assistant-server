@@ -100,6 +100,7 @@ from music_assistant.controllers.music.media.playlists import PlaylistController
 from music_assistant.controllers.music.media.podcasts import PodcastsController
 from music_assistant.controllers.music.media.radio import RadioController
 from music_assistant.controllers.music.media.tracks import TracksController
+from music_assistant.controllers.music.playlist_folders import PlaylistFoldersController
 from music_assistant.controllers.music.recency import RecencyEngine
 from music_assistant.controllers.music.recommendations.controller import (
     RecommendationsController,
@@ -288,6 +289,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         self.tracks = TracksController(self.mass)
         self.radio = RadioController(self.mass)
         self.playlists = PlaylistController(self.mass)
+        self.playlist_folders = PlaylistFoldersController(self.mass)
         self.audiobooks = AudiobooksController(self.mass)
         self.podcasts = PodcastsController(self.mass)
         self.genres = GenreController(self.mass)

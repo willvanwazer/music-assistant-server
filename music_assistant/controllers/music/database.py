@@ -47,6 +47,7 @@ from music_assistant.constants import (
 from music_assistant.controllers.music.constants import DB_SCHEMA_VERSION
 from music_assistant.controllers.music.media.genres import GenreController
 from music_assistant.controllers.music.migrations import migrate_database
+from music_assistant.controllers.music.playlist_folders import create_playlist_folder_tables
 from music_assistant.controllers.tasks.context import update_current_task_progress_text
 from music_assistant.helpers.database import DatabaseConnection
 
@@ -585,6 +586,7 @@ class MusicDatabaseSetupMixin:
                 )
                 raise MusicAssistantError(msg) from err
 
+        await create_playlist_folder_tables(self.database)
         await self.database.commit()
 
     async def __create_database_indexes(self) -> None:
