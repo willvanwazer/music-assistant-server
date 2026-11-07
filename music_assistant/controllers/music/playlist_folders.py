@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import unicodedata
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from mashumaro.mixins.orjson import DataClassORJSONMixin
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import EventType
 from music_assistant_models.errors import (
@@ -14,6 +16,7 @@ from music_assistant_models.errors import (
     InvalidDataError,
     MediaNotFoundError,
 )
+from music_assistant_models.media_items import Playlist  # noqa: TC002
 
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.json import json_dumps
@@ -26,6 +29,18 @@ FOLDERS_TABLE = "playlist_folders"
 MEMBERS_TABLE = "playlist_folder_members"
 MAX_FOLDERS = 100
 MAX_MOVE = 500
+
+
+@dataclass
+class PlaylistFolderSummary(DataClassORJSONMixin):
+    """A personal folder with typed previews for deferred transport serialization."""
+
+    folder_id: str
+    name: str
+    pinned: bool
+    playlist_count: int
+    playlist_ids: list[str]
+    preview: list[Playlist]
 
 
 async def create_playlist_folder_tables(database: DatabaseConnection) -> None:
@@ -66,7 +81,7 @@ class PlaylistFoldersController:
                 f"music/playlist_folders/{command}", handler, required_scope=scope
             )
 
-    async def list_folders(self) -> list[dict[str, Any]]:
+    async def list_folders(self) -> list[PlaylistFolderSummary]:
         """List personal folders with visible playlist counts and up to four cover previews."""
         user_id = self._user_id()
         async with self._lock:
@@ -79,14 +94,14 @@ class PlaylistFoldersController:
                 ids = [str(m["playlist_id"]) for m in members if m["folder_id"] == row["folder_id"]]
                 preview = await self.items(folder_id=row["folder_id"], limit=4)
                 result.append(
-                    {
-                        "folder_id": row["folder_id"],
-                        "name": row["name"],
-                        "pinned": bool(row["pinned"]),
-                        "playlist_count": len(ids),
-                        "playlist_ids": ids,
-                        "preview": preview,
-                    }
+                    PlaylistFolderSummary(
+                        folder_id=row["folder_id"],
+                        name=row["name"],
+                        pinned=bool(row["pinned"]),
+                        playlist_count=len(ids),
+                        playlist_ids=ids,
+                        preview=preview,
+                    )
                 )
             return result
 
@@ -292,4 +307,4 @@ class PlaylistFoldersController:
 
     def _notify(self, user_id: str) -> None:
         # Broadcast only an invalidation key; folder names and contents stay user-scoped.
-        self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, f"playlist_folders://{user_id}")
+        self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, f"playlist_folders://{user_id}", {})

@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import AsyncGenerator
 
 import pytest
+from music_assistant_models.api import SuccessResultMessage
 from music_assistant_models.auth import Scope, User
 from music_assistant_models.errors import (
     InsufficientPermissions,
@@ -19,6 +20,7 @@ from music_assistant.controllers.music.playlist_folders import (
     create_playlist_folder_tables,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import current_user
+from music_assistant.helpers.json import json_loads
 from music_assistant.mass import MusicAssistant
 
 
@@ -63,9 +65,9 @@ async def test_create_rename_pin_delete_preserves_playlists(
     assert updated["name"] == "Evening"
     assert updated["pinned"]
     rows = await folders.list_folders()
-    assert rows[0]["playlist_count"] == 1
-    assert rows[0]["playlist_ids"] == [item_id]
-    assert rows[0]["preview"][0].item_id == item_id
+    assert rows[0].playlist_count == 1
+    assert rows[0].playlist_ids == [item_id]
+    assert rows[0].preview[0].item_id == item_id
     assert [p.item_id for p in await folders.items(folder_id=folder["folder_id"])] == [item_id]
     assert item_id not in [p.item_id for p in await folders.items(unfiled=True)]
     await folders.delete(folder["folder_id"])
@@ -140,8 +142,8 @@ async def test_provider_filter_applies_to_members_counts_and_moves(
     )
     try:
         listed = await folders.list_folders()
-        assert listed[0]["playlist_count"] == 1
-        assert listed[0]["playlist_ids"] == [allowed]
+        assert listed[0].playlist_count == 1
+        assert listed[0].playlist_ids == [allowed]
         assert [p.item_id for p in await folders.items(folder_id=folder["folder_id"])] == [allowed]
         with pytest.raises(MediaNotFoundError):
             await folders.move([blocked])
@@ -176,10 +178,22 @@ async def test_api_scopes_and_playlist_deletion_cleanup(folders: PlaylistFolders
     folder = await folders.create("Cleanup")
     await folders.move([item_id], folder["folder_id"])
     await folders.mass.music.database.delete("playlists", {"item_id": int(item_id)})
-    assert (await folders.list_folders())[0]["playlist_count"] == 0
+    assert (await folders.list_folders())[0].playlist_count == 0
     assert (
         await folders.mass.music.database.get_row(
             "playlist_folder_members", {"playlist_id": int(item_id)}
         )
         is None
     )
+
+
+async def test_populated_folder_websocket_serialization(folders: PlaylistFoldersController) -> None:
+    """Nested previews use model serialization, including provider-mapping sets."""
+    item_id = await add_playlist(folders.mass, "websocket-preview")
+    folder = await folders.create("WebSocket previews")
+    await folders.move([item_id], folder["folder_id"])
+    message = SuccessResultMessage("folders", await folders.list_folders())
+    result = json_loads(message.to_json())["result"][0]
+    assert result["playlist_count"] == 1
+    assert result["preview"][0]["item_id"] == item_id
+    assert isinstance(result["preview"][0]["provider_mappings"], list)
