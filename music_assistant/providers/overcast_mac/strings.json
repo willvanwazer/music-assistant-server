@@ -1,0 +1,15 @@
+{
+  "config_entries": {
+    "server_url": {
+      "label": "overcastctl address",
+      "description": "The Mac's private overcastctl listener, e.g. http://100.75.16.86:8429 (overcastctl mcp serve --auth bearer --bind <tailnet IP> --audio)."
+    },
+    "token": {
+      "label": "Bearer token",
+      "description": "The token in ~/.config/overcastctl/mcp-token on the Mac."
+    }
+  },
+  "manifest": {
+    "description": "Podcasts, queue and progress from Overcast on a Mac running overcastctl."
+  }
+}

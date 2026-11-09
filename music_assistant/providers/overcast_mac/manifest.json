@@ -1,0 +1,11 @@
+{
+  "type": "music",
+  "domain": "overcast_mac",
+  "stage": "beta",
+  "name": "Overcast (Mac)",
+  "description": "Podcasts, queue and progress from Overcast on a Mac running overcastctl.",
+  "codeowners": ["@willvanwazer"],
+  "requirements": [],
+  "documentation": "https://github.com/willvanwazer/overcastctl",
+  "multi_instance": true
+}
