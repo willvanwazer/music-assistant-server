@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from aiohttp import ClientConnectionError
 from music_assistant_models.errors import InvalidDataError, ResourceTemporarilyUnavailable
-from music_assistant_models.media_items import Artist, Track
+from music_assistant_models.media_items import Artist, Track, UniqueList
 
 from music_assistant.providers.lastfm_recommendations.recommendations import (
     LastFMRecommendationManager,
@@ -240,7 +240,9 @@ def _track(name: str, artist: str = "Other", item_id: str | None = None) -> Trac
         provider="spotify",
         name=name,
         provider_mappings=set(),
-        artists=[Artist(item_id=artist, provider="spotify", name=artist, provider_mappings=set())],
+        artists=UniqueList(
+            [Artist(item_id=artist, provider="spotify", name=artist, provider_mappings=set())]
+        ),
     )
 
 
