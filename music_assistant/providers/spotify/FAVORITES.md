@@ -23,6 +23,11 @@ Unavailable imports, concurrent heart edits, and conflicting mappings between
 multiple Spotify releases of one MA item are deferred. Remote changes only save
 or unsave Spotify items; the reconciler never deletes MA library records.
 
+Spotify sometimes returns null entries for unavailable saved items. Those entries
+are counted separately. Missing known IDs are checked through Spotify's library
+membership endpoint before reconciliation, so unavailable metadata never implies
+an unfavorite. New unavailable items without an ID cannot be imported.
+
 Runs appear in Background tasks as **Sync Spotify favorites (every 15 minutes)**.
 An authenticated library administrator can trigger a run with
 `spotify/<provider-instance>/sync_favorites`. Disabling the setting cancels its

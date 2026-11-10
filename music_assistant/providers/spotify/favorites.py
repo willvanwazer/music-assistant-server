@@ -12,7 +12,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import MediaType, TaskStatus
-from music_assistant_models.media_items import Album, Artist, Track
+from music_assistant_models.media_items import Album, Artist, ProviderMapping, Track
 
 from music_assistant.helpers.datetime import utc
 
@@ -52,6 +52,7 @@ class FavoritesSync:
         self.timer_id = f"{self.task_id}_timer"
         self.path = Path(self.mass.storage_path) / f"{self.task_id}.json"
         self.lock = asyncio.Lock()
+        self.unavailable: dict[MediaType, int] = {}
         self.unregister = self.mass.register_api_command(
             f"spotify/{provider.instance_id}/sync_favorites",
             self.trigger,
@@ -92,11 +93,18 @@ class FavoritesSync:
                 raise RuntimeError("Spotify is unavailable; favorites were not changed")
             self._check_library_sync()
             state = await asyncio.to_thread(self._read_state)
+            self.unavailable = {}
             remote = await self._remote_snapshot()
             local = await self._local_snapshot()
+            await self._resolve_unavailable(state, local, remote)
             self._check_library_sync()
             plans = self._plan(state, local, remote)
-            counts = {"to_spotify": 0, "to_music_assistant": 0, "deferred": 0}
+            counts = {
+                "to_spotify": 0,
+                "to_music_assistant": 0,
+                "deferred": 0,
+                "unavailable": sum(self.unavailable.values()),
+            }
             try:
                 for media_type, item_id, desired in plans:
                     self._check_library_sync()
@@ -166,6 +174,7 @@ class FavoritesSync:
             params["offset"] = 0
         result: dict[str, FavoriteItem] = {}
         expected: int | None = None
+        unavailable = 0
         seen_pages: set[str] = set()
         while True:
             page = await self.provider._get_data(endpoint, **params)
@@ -175,9 +184,14 @@ class FavoritesSync:
                 raise RuntimeError("Spotify favorites changed during pagination; retry required")
             expected = total
             for entry in data["items"]:
-                raw = entry if media_type == MediaType.ARTIST else entry[media_type.value]
+                raw = (
+                    entry
+                    if entry is None or media_type == MediaType.ARTIST
+                    else entry[media_type.value]
+                )
                 if not raw or not raw.get("id"):
-                    raise RuntimeError("Incomplete Spotify favorite entry; no changes made")
+                    unavailable += 1
+                    continue
                 if media_type == MediaType.TRACK:
                     result[raw["id"]] = parse_track(raw, self.provider)
                 elif media_type == MediaType.ALBUM:
@@ -196,9 +210,66 @@ class FavoritesSync:
                 if next_offset <= params["offset"]:
                     raise RuntimeError("Spotify pagination did not advance; no changes made")
                 params["offset"] = next_offset
-        if len(result) != expected:
+        if len(result) + unavailable != expected:
             raise RuntimeError("Incomplete Spotify favorites snapshot; no changes made")
+        if unavailable:
+            self.unavailable[media_type] = unavailable
+            self.provider.logger.info(
+                "Spotify returned %s unavailable %s favorites; checking known IDs directly",
+                unavailable,
+                media_type.value,
+            )
         return result
+
+    async def _resolve_unavailable(
+        self,
+        state: dict[str, Any],
+        local: dict[MediaType, dict[str, FavoriteItem]],
+        remote: dict[MediaType, dict[str, FavoriteItem]],
+    ) -> None:
+        # Null saved entries have no ID. Confirm missing known IDs with the membership
+        # endpoint so an unavailable item can never be mistaken for an explicit unlike.
+        for kind in self.unavailable:
+            candidates = set(state["baseline"].get(kind.value, {})) | {
+                item_id for item_id, item in local[kind].items() if item.favorite
+            }
+            missing = sorted(candidates - remote[kind].keys())
+            for offset in range(0, len(missing), 40):
+                ids = missing[offset : offset + 40]
+                membership: Any = await self.provider._get_data(
+                    "me/library/contains",
+                    uris=",".join(f"spotify:{kind.value}:{item_id}" for item_id in ids),
+                )
+                if (
+                    not isinstance(membership, list)
+                    or len(membership) != len(ids)
+                    or any(type(value) is not bool for value in membership)
+                ):
+                    raise RuntimeError("Incomplete Spotify membership check; no changes made")
+                for item_id, saved in zip(ids, membership, strict=True):
+                    if not saved:
+                        continue
+                    if item := local[kind].get(item_id):
+                        remote[kind][item_id] = item
+                        continue
+                    item_class = {
+                        MediaType.TRACK: Track,
+                        MediaType.ALBUM: Album,
+                        MediaType.ARTIST: Artist,
+                    }[kind]
+                    remote[kind][item_id] = item_class(
+                        item_id=item_id,
+                        provider=self.provider.instance_id,
+                        name="Unavailable Spotify favorite",
+                        provider_mappings={
+                            ProviderMapping(
+                                item_id=item_id,
+                                provider_domain="spotify",
+                                provider_instance=self.provider.instance_id,
+                                available=False,
+                            )
+                        },
+                    )
 
     async def _local_snapshot(self) -> dict[MediaType, dict[str, FavoriteItem]]:
         result: dict[MediaType, dict[str, FavoriteItem]] = {}

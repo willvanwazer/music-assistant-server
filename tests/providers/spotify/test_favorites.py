@@ -174,13 +174,80 @@ async def test_incomplete_pagination_blocks(sync: Any) -> None:
 
 
 @pytest.mark.asyncio
+async def test_null_entries_count_as_unavailable(sync: Any) -> None:
+    """Spotify can return null wrappers or null tracks for inaccessible saved items."""
+    sync.provider._get_data = AsyncMock(
+        return_value={"total": 2, "items": [None, {"track": None}], "next": None}
+    )
+    assert await sync._read_collection(MediaType.TRACK) == {}
+    assert sync.unavailable == {MediaType.TRACK: 2}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("saved", [True, False])
+async def test_unavailable_membership_prevents_false_removal(sync: Any, saved: bool) -> None:
+    """A missing known favorite is only unhearted after a definitive membership read."""
+    item = artist(True)
+    snapshots(sync, item, False)
+    local = await sync._local_snapshot()
+    remote = await sync._remote_snapshot()
+    state = {"baseline": {"artist": {"sp1": True}}}
+    sync.unavailable = {MediaType.ARTIST: 1}
+    sync.provider._get_data = AsyncMock(return_value=[saved])
+    await sync._resolve_unavailable(state, local, remote)
+    assert ("sp1" in remote[MediaType.ARTIST]) is saved
+    assert sync._plan(state, local, remote) == [(MediaType.ARTIST, "sp1", saved)]
+    sync.provider._get_data.assert_awaited_once_with(
+        "me/library/contains", uris="spotify:artist:sp1"
+    )
+
+
+@pytest.mark.asyncio
+async def test_unavailable_saved_item_without_local_row_is_deferred(sync: Any) -> None:
+    """An inaccessible save survives a library reset without inventing catalog metadata."""
+    snapshots(sync, None, False)
+    local = await sync._local_snapshot()
+    remote = await sync._remote_snapshot()
+    sync.unavailable = {MediaType.ARTIST: 1}
+    sync.provider._get_data = AsyncMock(return_value=[True])
+    await sync._resolve_unavailable({"baseline": {"artist": {"sp1": True}}}, local, remote)
+    assert not remote[MediaType.ARTIST]["sp1"].available
+    assert (
+        await sync._apply(
+            MediaType.ARTIST, "sp1", True, local[MediaType.ARTIST], remote[MediaType.ARTIST]
+        )
+        == "deferred"
+    )
+    sync.mass.music.get_controller.return_value.add_item_to_library.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("response", [[], [None], {"error": "unavailable"}])
+async def test_failed_unavailable_membership_blocks(sync: Any, response: Any) -> None:
+    """Malformed membership responses cannot authorize changes to missing favorites."""
+    snapshots(sync, artist(True), False)
+    sync.unavailable = {MediaType.ARTIST: 1}
+    sync.provider._get_data = AsyncMock(return_value=response)
+    with pytest.raises(RuntimeError, match="Incomplete Spotify membership"):
+        await sync._resolve_unavailable(
+            {"baseline": {}}, await sync._local_snapshot(), await sync._remote_snapshot()
+        )
+    sync.provider.library_remove.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_idempotent_after_restart(sync: Any) -> None:
     """A converged checkpoint makes a subsequent run a no-op."""
     sync._write_state(
         {"version": 1, "account_id": "account", "baseline": {"artist": {"sp1": True}}}
     )
     snapshots(sync, artist(True), True)
-    assert await sync.run() == {"to_spotify": 0, "to_music_assistant": 0, "deferred": 0}
+    assert await sync.run() == {
+        "to_spotify": 0,
+        "to_music_assistant": 0,
+        "deferred": 0,
+        "unavailable": 0,
+    }
     sync.provider.library_add.assert_not_awaited()
     sync.mass.music.get_controller.return_value.set_favorite.assert_not_awaited()
 
