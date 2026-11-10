@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import MediaType, TaskStatus
-from music_assistant_models.media_items import Artist, ProviderMapping
+from music_assistant_models.media_items import Album, Artist, ProviderMapping
 
 from music_assistant.helpers.api import APICommandHandler
 from music_assistant.providers.spotify.favorites import MEDIA_TYPES, FavoritesSync, reconcile
@@ -211,3 +211,28 @@ async def test_browsed_item_becomes_visible_in_library(sync: Any) -> None:
     await sync.run()
     assert next(iter(item.provider_mappings)).in_library
     sync.mass.music.get_controller.return_value.set_provider_mappings.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_short_page_follows_spotify_offset(
+    sync: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Filtered short pages still advance to the offset supplied by Spotify."""
+    monkeypatch.setattr(
+        "music_assistant.providers.spotify.favorites.parse_album",
+        lambda raw, _provider: Album(
+            item_id=raw["id"], provider="spotify--test", name="Album", provider_mappings=set()
+        ),
+    )
+    sync.provider._get_data = AsyncMock(
+        side_effect=[
+            {
+                "total": 3,
+                "items": [{"album": {"id": "a1"}}],
+                "next": "https://api.spotify.com/v1/me/albums?offset=50&limit=50",
+            },
+            {"total": 3, "items": [{"album": {"id": "a2"}}, {"album": {"id": "a3"}}], "next": None},
+        ]
+    )
+    assert set(await sync._read_collection(MediaType.ALBUM)) == {"a1", "a2", "a3"}
+    assert [call.kwargs["offset"] for call in sync.provider._get_data.call_args_list] == [0, 50]

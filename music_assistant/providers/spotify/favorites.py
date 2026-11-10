@@ -8,6 +8,7 @@ import os
 from copy import copy
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
+from urllib.parse import parse_qs, urlsplit
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import MediaType, TaskStatus
@@ -191,7 +192,10 @@ class FavoritesSync:
             if media_type == MediaType.ARTIST:
                 params["after"] = data["cursors"]["after"]
             else:
-                params["offset"] += len(data["items"])
+                next_offset = int(parse_qs(urlsplit(data["next"]).query)["offset"][0])
+                if next_offset <= params["offset"]:
+                    raise RuntimeError("Spotify pagination did not advance; no changes made")
+                params["offset"] = next_offset
         if len(result) != expected:
             raise RuntimeError("Incomplete Spotify favorites snapshot; no changes made")
         return result
