@@ -81,8 +81,7 @@ def use_cache(
         methods where None signals a (transient) failure, so the call is retried on
         the next invocation instead of serving a cached None.
     """
-    if allow_bypass is None:
-        allow_bypass = not persistent
+    allow_bypass = not persistent if allow_bypass is None else allow_bypass
 
     def _decorator(
         func: Callable[Concatenate[ProviderT, P], Awaitable[R]],
@@ -140,6 +139,18 @@ def use_cache(
                 # task_id deduplicates concurrent refreshes for the same entry
                 async def _background_refresh() -> None:
                     try:
+                        # A prior refresh may finish while this caller's SQLite read
+                        # is still returning the old row. Recheck before fetching again.
+                        if (
+                            await cache.get_with_freshness(
+                                cache_key,
+                                provider=provider_id,
+                                checksum=cache_checksum,
+                                category=category,
+                                allow_bypass=allow_bypass,
+                            )
+                        )[1]:
+                            return
                         result = await func(self, *args, **kwargs)
                         if cache_none or result is not None:
                             await _store_task(result)

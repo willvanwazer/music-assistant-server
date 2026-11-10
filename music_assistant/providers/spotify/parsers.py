@@ -418,8 +418,8 @@ def recently_played_sources(
     Group recently played tracks by where they were played from, newest first.
 
     Returns up to ``limit`` unique ``(kind, id, track_obj)`` entries, where kind is
-    album, playlist or artist for a play with that context, playlist for liked songs,
-    and track for a play without a usable context. ``track_obj`` is the newest play.
+    album or playlist for a play with that context, playlist for liked songs,
+    and the track album otherwise. ``track_obj`` is the newest play.
 
     :param plays: The ``items`` of Spotify's ``me/player/recently-played`` response.
     :param liked_songs_id: The provider's fake playlist id for the liked songs collection.
@@ -434,12 +434,15 @@ def recently_played_sources(
         context = play.get("context") or {}
         context_type = context.get("type")
         context_id = str(context.get("uri") or "").rsplit(":", 1)[-1]
-        if context_type in ("album", "playlist", "artist") and context_id:
+        if context_type in ("album", "playlist") and context_id:
             key = (context_type, context_id)
         elif context_type == "collection":
             key = ("playlist", liked_songs_id)
         else:
-            key = ("track", track["id"])
+            album_id = (track.get("album") or {}).get("id")
+            if not album_id:
+                continue
+            key = ("album", album_id)
         if key in seen:
             continue
         seen.add(key)

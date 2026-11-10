@@ -209,6 +209,7 @@ class LibraryRecommendationsProvider(PluginProvider):
                         MediaType.GENRE,
                     ],
                     user_initiated_only=True,
+                    fully_played_only=False,
                     always_include_media_types=[MediaType.PODCAST, MediaType.AUDIOBOOK],
                     providers=providers,
                 )

@@ -13,9 +13,14 @@ from music_assistant_models.errors import (
     ResourceTemporarilyUnavailable,
 )
 
+from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.throttle_retry import ThrottlerManager
-from music_assistant.providers.lastfm_recommendations.constants import CONF_API_KEY
+from music_assistant.providers.lastfm_recommendations.constants import (
+    API_CACHE_EXPIRATION_SECONDS,
+    CACHE_CATEGORY_API,
+    CONF_API_KEY,
+)
 
 # Built-in Last.fm API key (read-only access, no secret needed)
 _DEFAULT_API_KEY: str = app_var("lastfm_api_key")
@@ -25,6 +30,7 @@ if TYPE_CHECKING:
 
     from aiohttp import ClientSession
 
+    from music_assistant.mass import MusicAssistant
     from music_assistant.providers.lastfm_recommendations import LastFMRecommendationsProvider
 
 
@@ -57,79 +63,20 @@ class LastFMAPIClient:
         """Return the provider's active logger."""
         return self.provider.logger
 
-    async def _get_data(self, method: str, **params: Any) -> dict[str, Any]:
-        """
-        Make a request to the Last.fm API.
+    @property
+    def mass(self) -> MusicAssistant:
+        """Return the server owning the persistent cache."""
+        return self.provider.mass
 
-        :param method: The Last.fm API method to call.
-        :param params: Additional query parameters.
-        """
-        async with self.throttler.acquire():
-            api_key = self.provider.config.get_value(CONF_API_KEY) or _DEFAULT_API_KEY
-            params.update(
-                {
-                    "method": method,
-                    "api_key": api_key,
-                    "format": "json",
-                }
-            )
+    @property
+    def domain(self) -> str:
+        """Return the provider domain for cache namespacing."""
+        return self.provider.domain
 
-            async with self.http_session.get(self.BASE_URL, params=params) as response:
-                response.raise_for_status()
-                data: dict[str, Any] = await response.json()
-
-        # Last.fm returns errors in the response body rather than as an HTTP status.
-        if "error" in data:
-            error_code = int(data.get("error", 0))
-            error_msg = data.get("message", "Unknown error")
-            msg = f"Last.fm API error {error_code}: {error_msg} (method: {method})"
-            exc_cls = self._ERROR_MAP.get(error_code, InvalidDataError)
-            raise exc_cls(msg)
-
-        return data
-
-    async def _get_list(
-        self,
-        method: str,
-        container: str,
-        item_key: str,
-        log_label: str,
-        primary_params: dict[str, Any],
-        fallback_params: dict[str, Any] | None = None,
-    ) -> list[dict[str, Any]]:
-        """
-        Fetch a list-type Last.fm response, retrying with the fallback params when empty.
-
-        :param method: Last.fm API method to call.
-        :param container: Top-level response key wrapping the result list.
-        :param item_key: Key of the result list within the container.
-        :param log_label: Human-readable label used in debug logging.
-        :param primary_params: Preferred request params (MBID when available).
-        :param fallback_params: Name-based params to retry with, or None for no retry.
-        """
-        # Last.fm's MBID index is sparse (recording MBIDs especially), so a missing MBID
-        # is retried by name rather than treated as "no similar items exist".
-        attempts = [primary_params]
-        if fallback_params is not None:
-            attempts.append(fallback_params)
-
-        for index, params in enumerate(attempts):
-            if index:
-                self.logger.debug("%s: MBID lookup empty, retrying by name", log_label)
-            try:
-                data = await self._get_data(method, **params)
-            except (TimeoutError, ClientError, InvalidDataError) as err:
-                self.logger.debug("%s request failed: %s", log_label, err)
-                continue
-
-            items: list[dict[str, Any]] | dict[str, Any] = data.get(container, {}).get(item_key, [])
-            # Last.fm returns a single dict when only one result is present.
-            if isinstance(items, dict):
-                return [items]
-            if items:
-                return items
-
-        return []
+    @property
+    def instance_id(self) -> str:
+        """Isolate responses by configured Last.fm account."""
+        return self.provider.instance_id
 
     async def get_similar_artists(
         self, artist_name: str, artist_mbid: str | None = None, limit: int = 10
@@ -481,3 +428,78 @@ class LastFMAPIClient:
             return [tracks]
 
         return tracks
+
+    @use_cache(API_CACHE_EXPIRATION_SECONDS, category=CACHE_CATEGORY_API, allow_expired_cache=True)
+    async def _get_data(self, method: str, **params: Any) -> dict[str, Any]:
+        """
+        Make a request to the Last.fm API.
+
+        :param method: The Last.fm API method to call.
+        :param params: Additional query parameters.
+        """
+        async with self.throttler.acquire():
+            api_key = self.provider.config.get_value(CONF_API_KEY) or _DEFAULT_API_KEY
+            params.update(
+                {
+                    "method": method,
+                    "api_key": api_key,
+                    "format": "json",
+                }
+            )
+
+            async with self.http_session.get(self.BASE_URL, params=params) as response:
+                response.raise_for_status()
+                data: dict[str, Any] = await response.json()
+
+        # Last.fm returns errors in the response body rather than as an HTTP status.
+        if "error" in data:
+            error_code = int(data.get("error", 0))
+            error_msg = data.get("message", "Unknown error")
+            msg = f"Last.fm API error {error_code}: {error_msg} (method: {method})"
+            exc_cls = self._ERROR_MAP.get(error_code, InvalidDataError)
+            raise exc_cls(msg)
+
+        return data
+
+    async def _get_list(
+        self,
+        method: str,
+        container: str,
+        item_key: str,
+        log_label: str,
+        primary_params: dict[str, Any],
+        fallback_params: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Fetch a list-type Last.fm response, retrying with the fallback params when empty.
+
+        :param method: Last.fm API method to call.
+        :param container: Top-level response key wrapping the result list.
+        :param item_key: Key of the result list within the container.
+        :param log_label: Human-readable label used in debug logging.
+        :param primary_params: Preferred request params (MBID when available).
+        :param fallback_params: Name-based params to retry with, or None for no retry.
+        """
+        # Last.fm's MBID index is sparse (recording MBIDs especially), so a missing MBID
+        # is retried by name rather than treated as "no similar items exist".
+        attempts = [primary_params]
+        if fallback_params is not None:
+            attempts.append(fallback_params)
+
+        for index, params in enumerate(attempts):
+            if index:
+                self.logger.debug("%s: MBID lookup empty, retrying by name", log_label)
+            try:
+                data = await self._get_data(method, **params)
+            except (TimeoutError, ClientError, InvalidDataError) as err:
+                self.logger.debug("%s request failed: %s", log_label, err)
+                continue
+
+            items: list[dict[str, Any]] | dict[str, Any] = data.get(container, {}).get(item_key, [])
+            # Last.fm returns a single dict when only one result is present.
+            if isinstance(items, dict):
+                return [items]
+            if items:
+                return items
+
+        return []

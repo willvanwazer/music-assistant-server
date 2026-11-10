@@ -1700,17 +1700,18 @@ class GenreController(MediaControllerBase[Genre]):
 
     async def _propagate_genre_mappings_to_parents(self) -> None:
         """
-        Propagate track genre mappings to albums and artists for filesystem provider instances.
+        Inherit track genres on streaming albums and opted-in filesystem parents.
 
-        Only runs when at least one filesystem_local or filesystem_smb provider instance has
-        the 'propagate_track_genres' config option enabled. Albums and artists that already
-        have their own genre metadata (e.g. from an NFO file) are skipped.
+        Streaming services often omit album genres, so their albums inherit track mappings.
+        Filesystem albums and artists still respect the 'propagate_track_genres' option.
+        Parents with their own genre metadata are skipped.
 
         Derived mappings are stored with is_derived=1 and rebuilt from scratch on each
         call, so stale derived mappings are never left behind.
         The genre_media_item_exclusion table is respected — excluded pairs are never derived.
         """
         enabled_instance_ids: list[str] = []
+        album_instance_ids: list[str] = []
         for p in self.mass.music.providers:
             if p.domain in {"filesystem_local", "filesystem_smb"}:
                 enabled = await self.mass.config.get_provider_config_value(
@@ -1718,6 +1719,9 @@ class GenreController(MediaControllerBase[Genre]):
                 )
                 if enabled:
                     enabled_instance_ids.append(p.instance_id)
+                    album_instance_ids.append(p.instance_id)
+            elif p.is_streaming_provider:
+                album_instance_ids.append(p.instance_id)
 
         db = self.mass.music.database
         gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
@@ -1728,13 +1732,13 @@ class GenreController(MediaControllerBase[Genre]):
             f"DELETE FROM {gm} WHERE is_derived = 1 AND media_type IN ('album', 'artist')"
         )
 
-        if not enabled_instance_ids:
+        if not album_instance_ids:
             await db.commit()
             return
 
         excl = DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION
         pm = DB_TABLE_PROVIDER_MAPPINGS
-        ids_sql = ", ".join(f"'{x}'" for x in enabled_instance_ids)
+        ids_sql = ", ".join(f"'{x}'" for x in album_instance_ids)
 
         # Derive album genres: inherit each track genre mapping onto the track's album,
         # provided the album has no own genre metadata and the pair is not excluded.
@@ -1758,6 +1762,11 @@ class GenreController(MediaControllerBase[Genre]):
             f"    AND e.media_type = 'album'"
             f")"
         )
+
+        if not enabled_instance_ids:
+            await db.commit()
+            return
+        ids_sql = ", ".join(f"'{x}'" for x in enabled_instance_ids)
 
         # Derive artist genres: inherit each track genre mapping onto the track's artist,
         # provided the artist has no own genre metadata and the pair is not excluded.

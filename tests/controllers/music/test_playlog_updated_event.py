@@ -14,6 +14,7 @@ from uuid import uuid4
 
 from music_assistant_models.enums import EventType, MediaType
 from music_assistant_models.media_items import (
+    Album,
     Artist,
     Podcast,
     PodcastEpisode,
@@ -115,8 +116,8 @@ async def test_progress_report_signals_resume_position(mass: MusicAssistant) -> 
     ]
 
 
-async def test_playing_progress_report_signals_nothing(mass: MusicAssistant) -> None:
-    """The frequent progress reports during playback do not touch the playlog, so stay quiet."""
+async def test_music_progress_updates_history_before_completion(mass: MusicAssistant) -> None:
+    """Current music appears in history without incrementing completed-play counts."""
     user = await mass.webserver.auth.create_user("playlogplaying")
     track = Track(
         item_id="track-002",
@@ -124,6 +125,12 @@ async def test_playing_progress_report_signals_nothing(mass: MusicAssistant) -> 
         name="Playing Track",
         provider_mappings=_provider_mapping(),
         duration=200,
+        album=Album(
+            item_id="album-002",
+            provider="test_prov",
+            name="Playing Album",
+            provider_mappings=_provider_mapping(),
+        ),
     )
     events = _collect_events(mass)
 
@@ -131,7 +138,18 @@ async def test_playing_progress_report_signals_nothing(mass: MusicAssistant) -> 
         track, fully_played=False, seconds_played=30, is_playing=True, userid=user.user_id
     )
 
-    assert await _updates(events) == []
+    updates = await _updates(events)
+    assert len(updates) == 1
+    assert updates[0].fully_played is False
+    assert updates[0].seconds_played == 30
+    rows = await mass.music.database.get_rows_from_query(
+        "SELECT media_type, fully_played, user_initiated FROM playlog WHERE userid = :userid",
+        {"userid": user.user_id},
+    )
+    by_type = {row["media_type"]: row for row in rows}
+    assert not by_type["track"]["fully_played"]
+    assert not by_type["album"]["fully_played"]
+    assert not by_type["album"]["user_initiated"]
 
 
 async def test_mark_unplayed_signals_playlog_updated(mass: MusicAssistant) -> None:
