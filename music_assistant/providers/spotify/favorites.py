@@ -7,10 +7,11 @@ import json
 import os
 from copy import copy
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import MediaType, TaskStatus
+from music_assistant_models.media_items import Album, Artist, Track
 
 from music_assistant.helpers.datetime import utc
 
@@ -18,9 +19,12 @@ from .parsers import parse_album, parse_artist, parse_track
 
 if TYPE_CHECKING:
     from music_assistant_models.background_task import BackgroundTask
-    from music_assistant_models.media_items import MediaItemType
+
+    from music_assistant.controllers.music.media.base import MediaControllerBase
 
     from .provider import SpotifyProvider
+
+type FavoriteItem = Artist | Album | Track
 
 CONF_SYNC_FAVORITES = "sync_favorites"
 INTERVAL = 15 * 60
@@ -126,7 +130,7 @@ class FavoritesSync:
     def _read_state(self) -> dict[str, Any]:
         if not self.path.exists():
             return {"version": 1, "account_id": self.provider.account_id, "baseline": {}}
-        state = json.loads(self.path.read_text())
+        state = cast("dict[str, Any]", json.loads(self.path.read_text()))
         if state.get("version") != 1 or state.get("account_id") != self.provider.account_id:
             raise RuntimeError("Favorites checkpoint belongs to a different account or version")
         if not isinstance(state.get("baseline"), dict) or any(
@@ -144,13 +148,13 @@ class FavoritesSync:
             os.fsync(handle.fileno())
         temp.replace(self.path)
 
-    async def _remote_snapshot(self) -> dict[MediaType, dict[str, MediaItemType]]:
-        result: dict[MediaType, dict[str, MediaItemType]] = {}
+    async def _remote_snapshot(self) -> dict[MediaType, dict[str, FavoriteItem]]:
+        result: dict[MediaType, dict[str, FavoriteItem]] = {}
         for media_type in MEDIA_TYPES:
             result[media_type] = await self._read_collection(media_type)
         return result
 
-    async def _read_collection(self, media_type: MediaType) -> dict[str, MediaItemType]:
+    async def _read_collection(self, media_type: MediaType) -> dict[str, FavoriteItem]:
         # Saved membership changes independently of catalog metadata. Reconciliation needs
         # current, complete membership, not the ordinary library listing cache.
         endpoint = "me/following" if media_type == MediaType.ARTIST else f"me/{media_type.value}s"
@@ -159,7 +163,7 @@ class FavoritesSync:
             params["type"] = "artist"
         else:
             params["offset"] = 0
-        result: dict[str, MediaItemType] = {}
+        result: dict[str, FavoriteItem] = {}
         expected: int | None = None
         seen_pages: set[str] = set()
         while True:
@@ -173,12 +177,12 @@ class FavoritesSync:
                 raw = entry if media_type == MediaType.ARTIST else entry[media_type.value]
                 if not raw or not raw.get("id"):
                     raise RuntimeError("Incomplete Spotify favorite entry; no changes made")
-                parser = {
-                    MediaType.TRACK: parse_track,
-                    MediaType.ALBUM: parse_album,
-                    MediaType.ARTIST: parse_artist,
-                }[media_type]
-                result[raw["id"]] = parser(raw, self.provider)
+                if media_type == MediaType.TRACK:
+                    result[raw["id"]] = parse_track(raw, self.provider)
+                elif media_type == MediaType.ALBUM:
+                    result[raw["id"]] = parse_album(raw, self.provider)
+                else:
+                    result[raw["id"]] = parse_artist(raw, self.provider)
             if not data["next"]:
                 break
             if not data["items"] or data["next"] in seen_pages:
@@ -192,11 +196,13 @@ class FavoritesSync:
             raise RuntimeError("Incomplete Spotify favorites snapshot; no changes made")
         return result
 
-    async def _local_snapshot(self) -> dict[MediaType, dict[str, MediaItemType]]:
-        result = {}
+    async def _local_snapshot(self) -> dict[MediaType, dict[str, FavoriteItem]]:
+        result: dict[MediaType, dict[str, FavoriteItem]] = {}
         for media_type in MEDIA_TYPES:
-            ctrl = self.mass.music.get_controller(media_type)
-            items = {}
+            ctrl = cast(
+                "MediaControllerBase[FavoriteItem]", self.mass.music.get_controller(media_type)
+            )
+            items: dict[str, FavoriteItem] = {}
             async for item in ctrl.iter_library_items(
                 provider=self.provider.instance_id, library_items_only=False
             ):
@@ -209,8 +215,8 @@ class FavoritesSync:
     def _plan(
         self,
         state: dict[str, Any],
-        local: dict[MediaType, dict[str, MediaItemType]],
-        remote: dict[MediaType, dict[str, MediaItemType]],
+        local: dict[MediaType, dict[str, FavoriteItem]],
+        remote: dict[MediaType, dict[str, FavoriteItem]],
     ) -> list[tuple[MediaType, str, bool]]:
         plans = []
         removals = 0
@@ -222,9 +228,9 @@ class FavoritesSync:
             # A merged library item can have several Spotify releases. Retain saved/tracked
             # releases; for a new MA favorite choose only one exact mapping, not every edition.
             grouped: dict[str, list[str]] = {}
-            for item_id, item in local_items.items():
-                if item.favorite:
-                    grouped.setdefault(item.item_id, []).append(item_id)
+            for item_id, candidate in local_items.items():
+                if candidate.favorite:
+                    grouped.setdefault(candidate.item_id, []).append(item_id)
             for ids in grouped.values():
                 if not keys.intersection(ids):
                     keys.add(min(ids))
@@ -262,10 +268,10 @@ class FavoritesSync:
         media_type: MediaType,
         item_id: str,
         desired: bool,
-        local: dict[str, MediaItemType],
-        remote: dict[str, MediaItemType],
+        local: dict[str, FavoriteItem],
+        remote: dict[str, FavoriteItem],
     ) -> str | None:
-        ctrl = self.mass.music.get_controller(media_type)
+        ctrl = cast("MediaControllerBase[FavoriteItem]", self.mass.music.get_controller(media_type))
         item = local.get(item_id)
         current = await ctrl.get_library_item_by_prov_id(item_id, self.provider.instance_id)
         if bool(current and current.favorite) != bool(item and item.favorite):
