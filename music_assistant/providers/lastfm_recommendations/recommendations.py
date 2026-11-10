@@ -21,6 +21,7 @@ from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.datetime import utc, utc_timestamp
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.providers.lastfm_recommendations.constants import (
+    CACHE_CATEGORY_API,
     CACHE_CATEGORY_RESOLVED_ITEMS,
     CACHE_CATEGORY_TOP_GENRES,
     CACHE_EXPIRATION_SECONDS,
@@ -94,6 +95,11 @@ class LastFMRecommendationManager:
     async def clear_cache(self) -> None:
         """Clear in-memory and persistent recommendation caches."""
         self._resolved_cache.clear()
+
+        await self.mass.cache.clear(
+            category_filter=CACHE_CATEGORY_API,
+            provider_filter=self.provider.instance_id,
+        )
 
         await self.mass.cache.clear(
             category_filter=CACHE_CATEGORY_RESOLVED_ITEMS,

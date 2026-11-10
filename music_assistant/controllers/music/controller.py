@@ -1624,8 +1624,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             # based on configured provider filter we can try to find a user
             user = provider_user
 
-        # update generic playlog table (when not playing)
-        if not is_playing:
+        # Music history records a real listen before completion. Spoken-word resume
+        # handling and completed-play credit keep their existing lifecycle below.
+        if not is_playing or (isinstance(media_item, Track) and (seconds_played or 0) >= 5):
             if user:
                 user_ids = [user.user_id]
             else:
@@ -1639,6 +1640,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             for user_id in user_ids:
                 params["userid"] = user_id
                 await self._upsert_playlog(params)
+            if isinstance(media_item, Track) and media_item.album and (seconds_played or 0) >= 5:
+                await self._record_album_history(media_item.album, timestamp, user_ids, queue_id)
             self._signal_playlog_updated(
                 reference,
                 fully_played=fully_played,
@@ -3252,6 +3255,27 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             f"ON CONFLICT({', '.join(PLAYLOG_CONFLICT_KEYS)}) DO UPDATE SET {', '.join(updates)}",
             entry,
         )
+
+    async def _record_album_history(
+        self, album: Album | ItemMapping, timestamp: float, user_ids: list[str], queue_id: str | None
+    ) -> None:
+        """Record a track's album in recent listening without awarding a completed play."""
+        for user_id in user_ids:
+            # Omit fully_played so a progress update cannot erase an earlier completed
+            # album play. The normal playback tracker remains responsible for its count.
+            await self._upsert_playlog(
+                {
+                    "item_id": album.item_id,
+                    "provider": album.provider,
+                    "media_type": MediaType.ALBUM.value,
+                    "name": album.name,
+                    "image": serialize_to_json(album.image.to_dict()) if album.image else None,
+                    "timestamp": timestamp,
+                    "userid": user_id,
+                    "queue_id": queue_id,
+                    "user_initiated": False,
+                }
+            )
 
     def _signal_playlog_updated(
         self,

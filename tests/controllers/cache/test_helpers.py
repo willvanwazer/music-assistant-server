@@ -235,10 +235,10 @@ async def test_swr_serves_stale_and_refreshes(
     assert provider.calls == 1
 
 
-async def test_wrapper_rechecks_misses_but_reads_hits_once(
+async def test_wrapper_rechecks_misses_and_stale_refreshes(
     cache_controller: CacheController, provider: _FakeProvider
 ) -> None:
-    """Only a miss needs a second lookup to close the completed-flight race."""
+    """Fresh hits use one lookup; misses and background refreshes recheck stale reads."""
     assert cache_controller.database is not None
     # cache miss
     provider.result = "value"
@@ -254,7 +254,7 @@ async def test_wrapper_rechecks_misses_but_reads_hits_once(
     ) as spy:
         assert await provider.fetch_swr("a") == "value"
     assert spy.await_count == 1
-    # stale hit (previously fetched the same row twice)
+    # A stale hit returns immediately; its background task rechecks the old row.
     await cache_controller.set(
         "fetch_swr.b", "stale", provider=_PROVIDER, expiration=-1, allow_expired_cache=True
     )
@@ -262,7 +262,12 @@ async def test_wrapper_rechecks_misses_but_reads_hits_once(
         cache_controller.database, "get_row", wraps=cache_controller.database.get_row
     ) as spy:
         assert await provider.fetch_swr("b") == "stale"
-    assert spy.await_count == 1
+    assert spy.await_count in (1, 2)
+
+    async def refreshed() -> bool:
+        return bool(await cache_controller.get("fetch_swr.b", provider=_PROVIDER) == "value")
+
+    await _wait_for(refreshed)
 
 
 # --- single flight ---

@@ -20,6 +20,10 @@ CACHE_CATEGORY_RESOLVED_ITEMS = 1
 # Cache category for the user's derived top genres
 CACHE_CATEGORY_TOP_GENRES = 2
 
+# Raw Last.fm listings change slowly; keep them available during background refreshes.
+CACHE_CATEGORY_API = 3
+API_CACHE_EXPIRATION_SECONDS = 86400
+
 # Expiration time for cached resolved items (in seconds)
 CACHE_EXPIRATION_SECONDS = 60 * 60 * 24 * 90  # 90 days
 

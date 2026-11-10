@@ -1,9 +1,10 @@
 """Unit tests for the Spotify provider's recently played recommendation row."""
 
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from music_assistant_models.enums import EventType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import Album, Artist, Playlist, Track
 
@@ -130,6 +131,11 @@ async def test_recently_played_items_resolve_sources(
     items = await provider.get_recommendation_items(RECENTLY_PLAYED_ROW_ID)
 
     get_data.assert_awaited_once_with("me/player/recently-played", limit=50)
+    cast("MagicMock", provider.mass.signal_event).assert_called_with(
+        EventType.PROVIDER_EVENT,
+        object_id="spotify--test",
+        data={"event": "recommendations_updated", "item_id": RECENTLY_PLAYED_ROW_ID},
+    )
     assert [item.item_id for item in items] == ["p1", "al1", "ar1", "t5"]
     assert isinstance(items[1], Album)
     assert isinstance(items[3], Track)

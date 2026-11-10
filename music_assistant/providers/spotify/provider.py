@@ -1249,6 +1249,11 @@ class SpotifyProvider(MusicProvider):
     async def _get_recently_played_plays(self) -> list[dict[str, Any]]:
         """Get the raw plays of me/player/recently-played, newest first."""
         result = await self._get_data("me/player/recently-played", limit=50)
+        # The first caller may have received the stale snapshot. Tell connected
+        # home screens to read the refreshed row instead of waiting for another play.
+        self.signal_provider_event(
+            {"event": "recommendations_updated", "item_id": RECENTLY_PLAYED_ROW_ID}
+        )
         return [play for play in result.get("items") or [] if play]
 
     def _build_search_types(self, media_types: list[MediaType]) -> str:
