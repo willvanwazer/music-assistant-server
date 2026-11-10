@@ -710,6 +710,18 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             queue_items,
             insert_at_index=len(queue_data.items) + 1,
         )
+        self.logger.info(
+            "Autoplay appended: queue=%s (%s), mode=%s, seeds=%s, tracks=%s",
+            queue.display_name,
+            queue_id,
+            mode.value,
+            "; ".join(f"{item.name} [{item.uri}]" for item in queue_data.enqueued_media_items),
+            "; ".join(
+                f"{item.media_item.name} [{item.media_item.uri}]"
+                for item in queue_items
+                if item.media_item
+            ),
+        )
 
     @handle_play_action
     async def _handle_play_media(
