@@ -148,10 +148,11 @@ async def test_connection_error_is_reported(provider: Mock) -> None:
 
 async def test_statsfm_rankings_drive_top_artists_and_existing_discovery_rows(
     provider: Mock,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Ranked seeds bypass local play recency and retain owned artists in the top-artists row."""
     manager = LastFMRecommendationManager(provider)
-    manager.statsfm.get_top_items = AsyncMock(
+    fetch = AsyncMock(
         side_effect=[
             [{"name": f"Artist {n}"} for n in range(20)],
             [{"name": f"Track {n}", "artists": [f"Artist {n}"]} for n in range(20)],
@@ -161,14 +162,18 @@ async def test_statsfm_rankings_drive_top_artists_and_existing_discovery_rows(
         Artist(item_id=str(n), provider="library", name=f"Artist {n}", provider_mappings=set())
         for n in range(20)
     ]
-    manager.get_or_resolve_artist = AsyncMock(side_effect=artists)
-    manager._get_recent_play_seeds = AsyncMock(side_effect=AssertionError("Must use stats.fm"))
-    manager._get_similar_artists_from_seeds = AsyncMock(return_value=[artists[0]])
-    manager._get_similar_tracks_from_seeds = AsyncMock(
+    recent = AsyncMock(side_effect=AssertionError("Must use stats.fm"))
+    similar_artists = AsyncMock(return_value=[artists[0]])
+    similar_tracks = AsyncMock(
         return_value=[
             Track(item_id="other", provider="spotify", name="Other", provider_mappings=set())
         ]
     )
+    monkeypatch.setattr(manager.statsfm, "get_top_items", fetch)
+    monkeypatch.setattr(manager, "get_or_resolve_artist", AsyncMock(side_effect=artists))
+    monkeypatch.setattr(manager, "_get_recent_play_seeds", recent)
+    monkeypatch.setattr(manager, "_get_similar_artists_from_seeds", similar_artists)
+    monkeypatch.setattr(manager, "_get_similar_tracks_from_seeds", similar_tracks)
     rows = [row async for row in manager._get_personalized_recommendations()]
     assert [row.item_id for row in rows] == [
         f"{provider.instance_id}_{suffix}"
@@ -178,36 +183,42 @@ async def test_statsfm_rankings_drive_top_artists_and_existing_discovery_rows(
     assert rows[0].translation_key == "statsfm_top_artists_months"
     assert rows[1].translation_params == ["5"]
     assert rows[2].translation_params == ["20"]
-    manager._get_similar_artists_from_seeds.assert_awaited_once_with(
-        [f"Artist {n}" for n in range(5)]
-    )
-    manager._get_similar_tracks_from_seeds.assert_awaited_once_with(
+    similar_artists.assert_awaited_once_with([f"Artist {n}" for n in range(5)])
+    similar_tracks.assert_awaited_once_with(
         [_SeedTrack(f"Artist {n}", f"Track {n}") for n in range(20)]
     )
-    manager._get_recent_play_seeds.assert_not_awaited()
+    recent.assert_not_awaited()
 
 
-async def test_statsfm_failure_does_not_fall_back_to_recent_plays(provider: Mock) -> None:
+async def test_statsfm_failure_does_not_fall_back_to_recent_plays(
+    provider: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Never mislabel recent-play approximations as stats.fm top charts."""
     manager = LastFMRecommendationManager(provider)
-    manager.statsfm.get_top_items = AsyncMock(side_effect=ResourceTemporarilyUnavailable("offline"))
-    manager._get_recent_play_seeds = AsyncMock()
+    monkeypatch.setattr(
+        manager.statsfm,
+        "get_top_items",
+        AsyncMock(side_effect=ResourceTemporarilyUnavailable("offline")),
+    )
+    recent = AsyncMock()
+    monkeypatch.setattr(manager, "_get_recent_play_seeds", recent)
     with pytest.raises(ResourceTemporarilyUnavailable):
         _ = [row async for row in manager._get_personalized_recommendations()]
-    manager._get_recent_play_seeds.assert_not_awaited()
+    recent.assert_not_awaited()
 
 
-async def test_collaboration_tries_alternate_artist_only_when_needed(provider: Mock) -> None:
+async def test_collaboration_tries_alternate_artist_only_when_needed(
+    provider: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Stats.fm credits may not put the artist Last.fm indexes first."""
     manager = LastFMRecommendationManager(provider)
     result = [{"name": "Similar", "artist": {"name": "Other"}}]
-    manager.api.get_similar_tracks = AsyncMock(side_effect=[[], result])
+    fetch = AsyncMock(side_effect=[[], result])
+    monkeypatch.setattr(manager.api, "get_similar_tracks", fetch)
     assert (
         await manager._get_similar_tracks_for_seed(_SeedTrack("Guest", "Duet", ("Lead",))) == result
     )
-    assert [
-        call.kwargs["artist_name"] for call in manager.api.get_similar_tracks.await_args_list
-    ] == ["Guest", "Lead"]
+    assert [call.kwargs["artist_name"] for call in fetch.await_args_list] == ["Guest", "Lead"]
 
 
 async def test_manual_cache_refresh_keeps_visible_rows_until_replacement(provider: Mock) -> None:
