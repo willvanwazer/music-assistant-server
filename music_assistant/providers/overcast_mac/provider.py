@@ -7,8 +7,10 @@ listener. Audio always comes through the Mac: Overcast's download when there is
 one, otherwise relayed from the feed by the Mac. That covers private member
 feeds too, whose credential-bearing URLs never leave the Mac.
 
-Synchronization is one-way (Overcast -> Music Assistant): overcastctl's writes
-close and reopen the Overcast app, so ``on_played`` deliberately writes nothing.
+Synchronization is two-way. Overcast's progress is read on every listing, and what
+is played in Music Assistant is written back through overcastctl's guarded
+set_progress once playback stops (see ``progress_sync.py``): each write closes and
+reopens Overcast on the Mac, so nothing is written while an episode plays.
 """
 
 from __future__ import annotations
@@ -39,6 +41,7 @@ from music_assistant.models.music_provider import MusicProvider
 
 from .client import OvercastCtlClient
 from .constants import CONF_SERVER_URL, CONF_TOKEN, PODCASTS_CACHE_S, SPECIAL_FOLDERS
+from .progress_sync import ProgressSync
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -59,6 +62,7 @@ class OvercastMacProvider(MusicProvider):
     """Provider for the Overcast library on a Mac running overcastctl."""
 
     _client: OvercastCtlClient
+    _progress: ProgressSync
     _podcasts: dict[str, dict[str, Any]]
     _podcasts_fetched: float = 0.0
 
@@ -75,8 +79,29 @@ class OvercastMacProvider(MusicProvider):
             self.logger,
         )
         self._podcasts = {}
+        self._progress = ProgressSync(self._client, self.logger)
         # fail setup early on a wrong address or token
         await self._get_podcasts(force=True)
+
+    async def unload(self, is_removed: bool = False) -> None:
+        """Cancel pending progress writes."""
+        await self._progress.close()
+
+    async def on_played(
+        self,
+        media_type: MediaType,
+        prov_item_id: str,
+        fully_played: bool,
+        position: int,
+        media_item: MediaItemType,
+        is_playing: bool = False,
+    ) -> None:
+        """Queue the listening progress to be written back to Overcast."""
+        if media_type != MediaType.PODCAST_EPISODE:
+            return
+        _, episode_id = self._split_episode_id(prov_item_id)
+        duration = int(getattr(media_item, "duration", 0) or 0)
+        self._progress.report(episode_id, int(position), fully_played, duration, is_playing)
 
     @property
     def is_streaming_provider(self) -> bool:

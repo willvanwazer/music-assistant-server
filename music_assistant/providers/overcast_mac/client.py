@@ -26,6 +26,20 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
 
+class OvercastCtlError(ResourceTemporarilyUnavailable):
+    """An overcastctl tool error, carrying its code (e.g. ``playing``, ``conflict``)."""
+
+    def __init__(self, message: str, code: str | None) -> None:
+        """
+        Initialize the error.
+
+        :param message: The error message.
+        :param code: overcastctl's error code.
+        """
+        super().__init__(message)
+        self.code = code
+
+
 class OvercastCtlClient:
     """Calls overcastctl's typed tools and fetches episode audio through the Mac."""
 
@@ -51,11 +65,14 @@ class OvercastCtlClient:
         self._logger = logger
         self._ids = itertools.count(1)
 
-    async def call(self, tool: str, **arguments: Any) -> dict[str, Any]:
+    async def call(
+        self, tool: str, *, timeout: float = REQUEST_TIMEOUT_S, **arguments: Any
+    ) -> dict[str, Any]:
         """
         Call one overcastctl tool and return its structured result.
 
         :param tool: The tool name, e.g. ``list_podcasts``.
+        :param timeout: Seconds to wait; writes reopen Overcast and wait for its sync.
         :param arguments: The tool's arguments; None values are omitted.
         """
         payload = {
@@ -78,7 +95,7 @@ class OvercastCtlClient:
                     f"{self._base_url}/mcp",
                     json=payload,
                     headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_S),
+                    timeout=aiohttp.ClientTimeout(total=timeout),
                 ) as response:
                     if response.status == 401:
                         raise LoginFailed("overcastctl rejected the bearer token")
@@ -107,8 +124,8 @@ class OvercastCtlClient:
             message = error.get("message") or "overcastctl call failed"
             if code == "not_found":
                 raise MediaNotFoundError(message)
-            raise ResourceTemporarilyUnavailable(f"overcastctl {tool}: {message}")
-        raise ResourceTemporarilyUnavailable("overcastctl stayed busy")  # pragma: no cover
+            raise OvercastCtlError(f"overcastctl {tool}: {message}", code)
+        raise OvercastCtlError("overcastctl stayed busy", "busy")  # pragma: no cover
 
     async def paged(self, tool: str, **arguments: Any) -> list[dict[str, Any]]:
         """
