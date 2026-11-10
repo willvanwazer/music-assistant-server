@@ -220,7 +220,9 @@ async def test_short_page_follows_spotify_offset(
     """Filtered short pages still advance to the offset supplied by Spotify."""
     monkeypatch.setattr(
         "music_assistant.providers.spotify.favorites.parse_album",
-        lambda raw, _provider: Album(item_id=raw["id"], provider="spotify--test", name="Album"),
+        lambda raw, _provider: Album(
+            item_id=raw["id"], provider="spotify--test", name="Album", provider_mappings=set()
+        ),
     )
     sync.provider._get_data = AsyncMock(
         side_effect=[
