@@ -44,6 +44,7 @@ from music_assistant_models.media_items import (
     Podcast,
     PodcastEpisode,
     ProviderMapping,
+    RecommendationFolder,
     SearchResults,
     Track,
     UniqueList,
@@ -98,6 +99,7 @@ from .parsers import (
     parse_podcast,
     parse_podcast_episode,
     parse_track,
+    recently_played_sources,
 )
 
 _PLAYLIST_PAGINATION_STATE_LIMIT = 32
@@ -117,6 +119,11 @@ class _PlaylistPaginationState:
 
     lock: asyncio.Lock
     snapshot: dict[str, Any] | None = None
+
+
+# recommendation row with what the account recently played on Spotify
+RECENTLY_PLAYED_ROW_ID = "recently_played"
+RECENTLY_PLAYED_LIMIT = 20
 
 
 class SpotifyProvider(MusicProvider):
@@ -535,6 +542,65 @@ class SpotifyProvider(MusicProvider):
                 )
                 return parse_playlist(playlist_obj, self)
             raise
+
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get this provider's recommendation rows, without items."""
+        return [
+            RecommendationFolder(
+                item_id=RECENTLY_PLAYED_ROW_ID,
+                provider=self.instance_id,
+                name="Recently played on Spotify",
+                icon="mdi-history",
+            )
+        ]
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        if item_id != RECENTLY_PLAYED_ROW_ID:
+            return UniqueList()
+        return UniqueList(await self._get_recently_played())
+
+    async def _get_recently_played(self) -> list[MediaItemType]:
+        """
+        Get what the account recently played anywhere on Spotify, newest first.
+
+        Plays are shown as the album, playlist or artist they were played from,
+        like Spotify's own home screen, and as the track itself otherwise.
+        """
+        result = await self._get_data("me/player/recently-played", limit=50)
+        sources = recently_played_sources(
+            result.get("items") or [],
+            self._get_liked_songs_playlist_id(),
+            RECENTLY_PLAYED_LIMIT,
+        )
+
+        async def resolve(kind: str, item_id: str, track: dict[str, Any]) -> MediaItemType | None:
+            try:
+                if kind == "album" and track.get("album", {}).get("id") == item_id:
+                    # the play already carries the simplified album
+                    return parse_album(track["album"], self)
+                if kind == "album":
+                    return await self.get_album(item_id)
+                if kind == "playlist":
+                    return await self.get_playlist(item_id)
+                if kind == "artist":
+                    return await self.get_artist(item_id)
+                track.setdefault("is_local", False)
+                track.setdefault("is_playable", True)
+                return parse_track(track, self)
+            except (MediaNotFoundError, KeyError) as err:
+                # a deleted playlist or an incomplete track is skipped, not fatal
+                self.logger.debug("Skipping recently played %s %s: %s", kind, item_id, err)
+                return None
+
+        resolved = await asyncio.gather(*(resolve(*source) for source in sources))
+        return [item for item in resolved if item is not None]
 
     @use_cache()
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:

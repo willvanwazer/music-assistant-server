@@ -409,3 +409,41 @@ def parse_audiobook(audiobook_obj: dict[str, Any], provider: SpotifyProvider) ->
             audiobook.metadata.release_date = datetime.fromisoformat(date_str)
 
     return audiobook
+
+
+def recently_played_sources(
+    plays: list[dict[str, Any]], liked_songs_id: str, limit: int
+) -> list[tuple[str, str, dict[str, Any]]]:
+    """
+    Group recently played tracks by where they were played from, newest first.
+
+    Returns up to ``limit`` unique ``(kind, id, track_obj)`` entries, where kind is
+    album, playlist or artist for a play with that context, playlist for liked songs,
+    and track for a play without a usable context. ``track_obj`` is the newest play.
+
+    :param plays: The ``items`` of Spotify's ``me/player/recently-played`` response.
+    :param liked_songs_id: The provider's fake playlist id for the liked songs collection.
+    :param limit: The maximum number of entries to return.
+    """
+    entries: list[tuple[str, str, dict[str, Any]]] = []
+    seen: set[tuple[str, str]] = set()
+    for play in plays:
+        track = (play or {}).get("track")
+        if not track or not track.get("id"):
+            continue
+        context = play.get("context") or {}
+        context_type = context.get("type")
+        context_id = str(context.get("uri") or "").rsplit(":", 1)[-1]
+        if context_type in ("album", "playlist", "artist") and context_id:
+            key = (context_type, context_id)
+        elif context_type == "collection":
+            key = ("playlist", liked_songs_id)
+        else:
+            key = ("track", track["id"])
+        if key in seen:
+            continue
+        seen.add(key)
+        entries.append((key[0], key[1], track))
+        if len(entries) >= limit:
+            break
+    return entries

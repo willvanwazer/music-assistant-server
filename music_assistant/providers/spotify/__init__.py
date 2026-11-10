@@ -42,6 +42,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.SIMILAR_TRACKS,
     ProviderFeature.LIBRARY_PODCASTS,
     ProviderFeature.LIBRARY_PODCASTS_EDIT,
+    ProviderFeature.RECOMMENDATIONS,
 }
 
 
