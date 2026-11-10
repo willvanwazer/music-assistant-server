@@ -551,6 +551,7 @@ class SpotifyProvider(MusicProvider):
                 item_id=RECENTLY_PLAYED_ROW_ID,
                 provider=self.instance_id,
                 name="Recently played on Spotify",
+                translation_key="recently_played",
                 icon="mdi-history",
             )
         ]
@@ -566,52 +567,6 @@ class SpotifyProvider(MusicProvider):
         if item_id != RECENTLY_PLAYED_ROW_ID:
             return UniqueList()
         return UniqueList(await self._get_recently_played())
-
-    async def _get_recently_played(self) -> list[MediaItemType]:
-        """
-        Get what the account recently played anywhere on Spotify, newest first.
-
-        Plays are shown as the album, playlist or artist they were played from,
-        like Spotify's own home screen, and as the track itself otherwise.
-        """
-        sources = recently_played_sources(
-            await self._get_recently_played_plays(),
-            self._get_liked_songs_playlist_id(),
-            RECENTLY_PLAYED_LIMIT,
-        )
-
-        async def resolve(kind: str, item_id: str, track: dict[str, Any]) -> MediaItemType | None:
-            try:
-                if kind == "album" and track.get("album", {}).get("id") == item_id:
-                    # the play already carries the simplified album
-                    return parse_album(track["album"], self)
-                if kind == "album":
-                    return await self.get_album(item_id)
-                if kind == "playlist":
-                    return await self.get_playlist(item_id)
-                if kind == "artist":
-                    return await self.get_artist(item_id)
-                track.setdefault("is_local", False)
-                track.setdefault("is_playable", True)
-                return parse_track(track, self)
-            except (MediaNotFoundError, KeyError) as err:
-                # a deleted playlist or an incomplete track is skipped, not fatal
-                self.logger.debug("Skipping recently played %s %s: %s", kind, item_id, err)
-                return None
-
-        resolved = await asyncio.gather(*(resolve(*source) for source in sources))
-        return [item for item in resolved if item is not None]
-
-    @use_cache(
-        RECENTLY_PLAYED_CACHE_SECONDS,
-        allow_bypass=False,
-        # serve the last listing at once and refresh it in the background
-        allow_expired_cache=True,
-    )
-    async def _get_recently_played_plays(self) -> list[dict[str, Any]]:
-        """Get the raw plays of me/player/recently-played, newest first."""
-        result = await self._get_data("me/player/recently-played", limit=50)
-        return [play for play in result.get("items") or [] if play]
 
     @use_cache()
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
@@ -1234,6 +1189,52 @@ class SpotifyProvider(MusicProvider):
 
         self.logger.info("Successfully logged in to Spotify developer session")
         return auth_info
+
+    async def _get_recently_played(self) -> list[MediaItemType]:
+        """
+        Get what the account recently played anywhere on Spotify, newest first.
+
+        Plays are shown as the album, playlist or artist they were played from,
+        like Spotify's own home screen, and as the track itself otherwise.
+        """
+        sources = recently_played_sources(
+            await self._get_recently_played_plays(),
+            self._get_liked_songs_playlist_id(),
+            RECENTLY_PLAYED_LIMIT,
+        )
+
+        async def resolve(kind: str, item_id: str, track: dict[str, Any]) -> MediaItemType | None:
+            try:
+                if kind == "album" and track.get("album", {}).get("id") == item_id:
+                    # the play already carries the simplified album
+                    return parse_album(track["album"], self)
+                if kind == "album":
+                    return await self.get_album(item_id)
+                if kind == "playlist":
+                    return await self.get_playlist(item_id)
+                if kind == "artist":
+                    return await self.get_artist(item_id)
+                track.setdefault("is_local", False)
+                track.setdefault("is_playable", True)
+                return parse_track(track, self)
+            except (MediaNotFoundError, KeyError) as err:
+                # a deleted playlist or an incomplete track is skipped, not fatal
+                self.logger.debug("Skipping recently played %s %s: %s", kind, item_id, err)
+                return None
+
+        resolved = await asyncio.gather(*(resolve(*source) for source in sources))
+        return [item for item in resolved if item is not None]
+
+    @use_cache(
+        RECENTLY_PLAYED_CACHE_SECONDS,
+        allow_bypass=False,
+        # serve the last listing at once and refresh it in the background
+        allow_expired_cache=True,
+    )
+    async def _get_recently_played_plays(self) -> list[dict[str, Any]]:
+        """Get the raw plays of me/player/recently-played, newest first."""
+        result = await self._get_data("me/player/recently-played", limit=50)
+        return [play for play in result.get("items") or [] if play]
 
     def _build_search_types(self, media_types: list[MediaType]) -> str:
         """Build comma-separated search types string from media types."""
