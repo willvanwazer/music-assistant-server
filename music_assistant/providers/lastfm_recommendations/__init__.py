@@ -40,6 +40,11 @@ from music_assistant.providers.lastfm_recommendations.constants import (
 from music_assistant.providers.lastfm_recommendations.recommendations import (
     LastFMRecommendationManager,
 )
+from music_assistant.providers.lastfm_recommendations.statsfm import (
+    CONF_STATSFM_PERIOD,
+    CONF_STATSFM_USERNAME,
+    STATSFM_PERIODS,
+)
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
@@ -89,6 +94,19 @@ class LastFMRecommendationsProvider(MetadataProvider):
                 key=CONF_ENABLE_PERSONALIZED,
                 type=ConfigEntryType.BOOLEAN,
                 default_value=False,
+                category="recommendations",
+            ),
+            ConfigEntry(
+                key=CONF_STATSFM_USERNAME,
+                type=ConfigEntryType.STRING,
+                required=False,
+                category="recommendations",
+            ),
+            ConfigEntry(
+                key=CONF_STATSFM_PERIOD,
+                type=ConfigEntryType.STRING,
+                default_value="months",
+                options=[ConfigValueOption(period) for period in STATSFM_PERIODS],
                 category="recommendations",
             ),
             ConfigEntry(
@@ -308,6 +326,6 @@ class LastFMRecommendationsProvider(MetadataProvider):
                 err,
             )
         except ResourceTemporarilyUnavailable as err:
-            self.logger.warning("Last.fm rate-limited the refresh, will retry later: %s", err)
+            self.logger.warning("Recommendation source unavailable, will retry later: %s", err)
         except MusicAssistantError as err:
             self.logger.warning("Failed to build recommendations: %s", err)

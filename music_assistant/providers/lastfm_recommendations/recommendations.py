@@ -55,6 +55,13 @@ from music_assistant.providers.lastfm_recommendations.parsers import (
     parse_artist,
     parse_track,
 )
+from music_assistant.providers.lastfm_recommendations.statsfm import (
+    CACHE_CATEGORY_STATSFM,
+    CONF_STATSFM_PERIOD,
+    CONF_STATSFM_USERNAME,
+    STATSFM_PERIODS,
+    StatsFMAPIClient,
+)
 
 if TYPE_CHECKING:
     import logging
@@ -65,10 +72,11 @@ _MediaItemT = TypeVar("_MediaItemT", Artist, Album, Track)
 
 
 class _SeedTrack(NamedTuple):
-    """A recently played track used to seed similar-artist/track lookups."""
+    """A listened track used to seed similarity lookups, with alternate artist credits."""
 
     artist: str
     name: str
+    other_artists: tuple[str, ...] = ()
 
 
 class LastFMRecommendationManager:
@@ -83,6 +91,7 @@ class LastFMRecommendationManager:
         self.provider = provider
         self.api = provider.api
         self.mass = provider.mass
+        self.statsfm = StatsFMAPIClient(provider)
 
         # Resolved items keyed by MBID (preferred) or name to avoid re-resolving.
         self._resolved_cache: dict[str, Artist | Album | Track] = {}
@@ -109,8 +118,10 @@ class LastFMRecommendationManager:
             category_filter=CACHE_CATEGORY_TOP_GENRES,
             provider_filter=self.provider.instance_id,
         )
-
-        self.provider._recommendation_folders.clear()
+        await self.mass.cache.clear(
+            category_filter=CACHE_CATEGORY_STATSFM,
+            provider_filter=self.provider.instance_id,
+        )
 
         self.logger.info("Cleared all recommendation caches (in-memory and persistent)")
 
@@ -391,6 +402,11 @@ class LastFMRecommendationManager:
         if not self.provider.config.get_value(CONF_ENABLE_PERSONALIZED):
             return
 
+        if username := self.provider.config.get_value(CONF_STATSFM_USERNAME):
+            async for folder in self._get_statsfm_recommendations(str(username)):
+                yield folder
+            return
+
         # Both seed rows derive from the same recent play events, so scan the playlog once.
         recent_plays = await self._get_recent_play_seeds()
 
@@ -425,6 +441,68 @@ class LastFMRecommendationManager:
                     provider=self.provider.instance_id,
                     items=UniqueList(similar_tracks[:TARGET_ITEM_COUNT]),
                     subtitle=f"Based on your top {len(top_tracks)} tracks",
+                    icon="mdi-music-note-outline",
+                )
+
+    async def _get_statsfm_recommendations(
+        self, username: str
+    ) -> AsyncIterator[RecommendationFolder]:
+        """Show stats.fm rankings and use their top five artists and twenty tracks as seeds."""
+        period = str(self.provider.config.get_value(CONF_STATSFM_PERIOD) or "months")
+        artists_raw, tracks_raw = await asyncio.gather(
+            self.statsfm.get_top_items(username, period, "artists"),
+            self.statsfm.get_top_items(username, period, "tracks"),
+        )
+        period_label = STATSFM_PERIODS[period]
+        resolved = await asyncio.gather(
+            *[self.get_or_resolve_artist(artist) for artist in artists_raw]
+        )
+        top_artists = [artist for artist in resolved if artist is not None]
+        if top_artists:
+            yield RecommendationFolder(
+                item_id=f"{self.provider.instance_id}_statsfm_top_artists",
+                name="Your Top Artists",
+                translation_key=f"statsfm_top_artists_{period}",
+                provider=self.provider.instance_id,
+                items=UniqueList(top_artists),
+                subtitle=f"stats.fm · {period_label}",
+                icon="mdi-chart-bar",
+            )
+
+        artist_seeds = [artist["name"] for artist in artists_raw[:TOP_ARTISTS_LIMIT]]
+        if artist_seeds:
+            similar_artists = await self._get_similar_artists_from_seeds(artist_seeds)
+            if similar_artists:
+                yield RecommendationFolder(
+                    item_id=f"{self.provider.instance_id}_similar_artists",
+                    name="Discover Similar Artists",
+                    translation_key=f"statsfm_similar_artists_{period}",
+                    translation_params=[str(len(artist_seeds))],
+                    provider=self.provider.instance_id,
+                    items=UniqueList(similar_artists[:TARGET_ITEM_COUNT]),
+                    subtitle=(
+                        f"Based on your top {len(artist_seeds)} artists on stats.fm · {period_label}"
+                    ),
+                    icon="mdi-account-music-outline",
+                )
+
+        track_seeds = [
+            _SeedTrack(track["artists"][0], track["name"], tuple(track["artists"][1:]))
+            for track in tracks_raw[:TOP_TRACKS_LIMIT]
+        ]
+        if track_seeds:
+            similar_tracks = await self._get_similar_tracks_from_seeds(track_seeds)
+            if similar_tracks:
+                yield RecommendationFolder(
+                    item_id=f"{self.provider.instance_id}_similar_tracks",
+                    name="Discover Similar Tracks",
+                    translation_key=f"statsfm_similar_tracks_{period}",
+                    translation_params=[str(len(track_seeds))],
+                    provider=self.provider.instance_id,
+                    items=UniqueList(similar_tracks[:TARGET_ITEM_COUNT]),
+                    subtitle=(
+                        f"Based on your top {len(track_seeds)} tracks on stats.fm · {period_label}"
+                    ),
                     icon="mdi-music-note-outline",
                 )
 
@@ -837,18 +915,14 @@ class LastFMRecommendationManager:
         all_similar: list[dict[str, Any]] = []
 
         # Seed names are tracked so seeds don't appear in their own recommendations.
-        seed_name_keys = {f"{seed.artist}_{seed.name}".lower() for seed in seed_tracks}
+        seed_name_keys = {
+            f"{artist}_{seed.name}".lower()
+            for seed in seed_tracks
+            for artist in (seed.artist, *seed.other_artists)
+        }
 
         similar_lists = await asyncio.gather(
-            *[
-                self.api.get_similar_tracks(
-                    artist_name=seed.artist,
-                    track_name=seed.name,
-                    track_mbid=None,
-                    limit=SIMILAR_ITEMS_PER_SEED,
-                )
-                for seed in seed_tracks
-            ]
+            *[self._get_similar_tracks_for_seed(seed) for seed in seed_tracks]
         )
         for similar in similar_lists:
             all_similar.extend(similar)
@@ -893,6 +967,19 @@ class LastFMRecommendationManager:
             *[self.get_or_resolve_track(track_data) for track_data in top_tracks_data]
         )
         return self._exclude_owned([track for track in resolved_tracks if track is not None])
+
+    async def _get_similar_tracks_for_seed(self, seed: _SeedTrack) -> list[dict[str, Any]]:
+        """Try alternate credits when Last.fm does not recognize a collaboration's first artist."""
+        for artist in (seed.artist, *seed.other_artists):
+            similar = await self.api.get_similar_tracks(
+                artist_name=artist,
+                track_name=seed.name,
+                track_mbid=None,
+                limit=SIMILAR_ITEMS_PER_SEED,
+            )
+            if similar:
+                return similar
+        return []
 
 
 def _artist_and_name_key(lastfm_item: dict[str, Any]) -> str:
