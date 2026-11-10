@@ -32,6 +32,19 @@
       "label": "Refresh Recommendations",
       "description": "Rebuild recommendations immediately instead of waiting for the next scheduled refresh.",
       "action_label": "Refresh Now"
+    },
+    "statsfm_username": {
+      "label": "stats.fm Profile",
+      "description": "Optional username or profile URL. Use your public stats.fm rankings for Your Top Artists and personalized discovery instead of Music Assistant recent plays. Enable Personalized Recommendations to show these rows."
+    },
+    "statsfm_period": {
+      "label": "stats.fm Listening Period",
+      "description": "Time period for your top artists and the top 5 artist / top 20 track discovery seeds. Uses your stats.fm sorting preference.",
+      "options": {
+        "weeks": "Past 4 weeks",
+        "months": "Past 6 months",
+        "lifetime": "All time"
+      }
     }
   },
   "media": {
@@ -71,6 +84,42 @@
       "geo_tracks": {
         "name": "Top tracks for {0}",
         "subtitle": "Most popular tracks in {0}"
+      },
+      "statsfm_top_artists_weeks": {
+        "name": "Your Top Artists",
+        "subtitle": "stats.fm · Past 4 weeks"
+      },
+      "statsfm_similar_artists_weeks": {
+        "name": "Discover Similar Artists",
+        "subtitle": "Based on your top {0} artists on stats.fm · Past 4 weeks"
+      },
+      "statsfm_similar_tracks_weeks": {
+        "name": "Discover Similar Tracks",
+        "subtitle": "Based on your top {0} tracks on stats.fm · Past 4 weeks"
+      },
+      "statsfm_top_artists_months": {
+        "name": "Your Top Artists",
+        "subtitle": "stats.fm · Past 6 months"
+      },
+      "statsfm_similar_artists_months": {
+        "name": "Discover Similar Artists",
+        "subtitle": "Based on your top {0} artists on stats.fm · Past 6 months"
+      },
+      "statsfm_similar_tracks_months": {
+        "name": "Discover Similar Tracks",
+        "subtitle": "Based on your top {0} tracks on stats.fm · Past 6 months"
+      },
+      "statsfm_top_artists_lifetime": {
+        "name": "Your Top Artists",
+        "subtitle": "stats.fm · All time"
+      },
+      "statsfm_similar_artists_lifetime": {
+        "name": "Discover Similar Artists",
+        "subtitle": "Based on your top {0} artists on stats.fm · All time"
+      },
+      "statsfm_similar_tracks_lifetime": {
+        "name": "Discover Similar Tracks",
+        "subtitle": "Based on your top {0} tracks on stats.fm · All time"
       }
     }
   },
