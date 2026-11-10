@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from music_assistant_models.enums import ContentType, MediaType, StreamType
 from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.media_items import PodcastEpisode
 
 from music_assistant.providers.overcast_mac import OvercastMacProvider
 
@@ -61,7 +62,7 @@ def provider(client: MagicMock) -> OvercastMacProvider:
     config.get_value.return_value = None
     prov = OvercastMacProvider(AsyncMock(), manifest, config)
     prov._client = client
-    prov._podcasts = {p["id"]: p for p in PODCASTS}
+    prov._podcasts = {str(p["id"]): p for p in PODCASTS}
     prov._podcasts_fetched = 1e18
     return prov
 
@@ -75,8 +76,9 @@ async def test_up_next_reads_unordered_queue(
     client.paged.assert_awaited_with("get_queue", allow_unordered=True)
     assert [i.item_id for i in items] == ["10:501", "10:502"]
     first = items[0]
-    assert isinstance(first.podcast, object)
+    assert isinstance(first, PodcastEpisode)
     assert first.resume_position_ms == 91_000
+    assert first.metadata.images
     assert first.metadata.images[0].path.startswith("https://r2.overcast-cdn.com/")
 
 
