@@ -5,9 +5,12 @@ from __future__ import annotations
 import asyncio
 import random
 from collections.abc import AsyncIterator, Awaitable, Callable
+from itertools import zip_longest
 from typing import TYPE_CHECKING, Any, NamedTuple, TypeVar
 
+from aiohttp import ClientError
 from music_assistant_models.enums import ExternalID, MediaType
+from music_assistant_models.errors import MusicAssistantError, ResourceTemporarilyUnavailable
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -491,7 +494,7 @@ class LastFMRecommendationManager:
             for track in tracks_raw[:TOP_TRACKS_LIMIT]
         ]
         if track_seeds:
-            similar_tracks = await self._get_similar_tracks_from_seeds(track_seeds)
+            similar_tracks = await self._get_catalog_tracks_from_seeds(track_seeds)
             if similar_tracks:
                 yield RecommendationFolder(
                     item_id=f"{self.provider.instance_id}_similar_tracks",
@@ -505,6 +508,65 @@ class LastFMRecommendationManager:
                     ),
                     icon="mdi-music-note-outline",
                 )
+
+    async def _get_catalog_tracks_from_seeds(self, seeds: list[_SeedTrack]) -> list[Track]:
+        """Use connected catalogs for current tracks, balancing results across ranked seeds."""
+        semaphore = asyncio.Semaphore(4)
+
+        async def lookup(seed: _SeedTrack) -> list[Track]:
+            async with semaphore, asyncio.timeout(30):
+                return await self._get_catalog_tracks_for_seed(seed)
+
+        outcomes = await asyncio.gather(*(lookup(seed) for seed in seeds), return_exceptions=True)
+        lists: list[list[Track]] = []
+        failed = False
+        for outcome in outcomes:
+            if isinstance(outcome, MusicAssistantError | ClientError | OSError | TimeoutError):
+                self.logger.debug("Track recommendation lookup failed: %s", outcome)
+                failed = True
+            elif isinstance(outcome, BaseException):
+                raise outcome
+            else:
+                lists.append(outcome)
+        if failed and not any(lists):
+            raise ResourceTemporarilyUnavailable("Track recommendation sources are unavailable")
+
+        seed_keys = {
+            (seed.name.casefold(), artist.casefold())
+            for seed in seeds
+            for artist in (seed.artist, *seed.other_artists)
+        }
+        seen: set[tuple[str, str]] = set()
+        result: list[Track] = []
+        for group in zip_longest(*lists):
+            for track in group:
+                if track is None or not track.artists or track.provider == "library":
+                    continue
+                keys = {(track.name.casefold(), artist.name.casefold()) for artist in track.artists}
+                if keys & (seed_keys | seen):
+                    continue
+                seen.update(keys)
+                if await self._is_in_library(
+                    {"name": track.name, "artist": track.artists[0].name, "mbid": track.mbid},
+                    MediaType.TRACK,
+                ):
+                    continue
+                result.append(track)
+                if len(result) == TARGET_ITEM_COUNT:
+                    return result
+        return result
+
+    async def _get_catalog_tracks_for_seed(self, seed: _SeedTrack) -> list[Track]:
+        """Resolve a ranked track and ask its music provider, with Last.fm as fallback."""
+        for artist in (seed.artist, *seed.other_artists):
+            track = await self.get_or_resolve_track({"name": seed.name, "artist": artist})
+            if track is None:
+                continue
+            if matches := await self.mass.music.tracks.similar_tracks(
+                track.item_id, track.provider, limit=SIMILAR_ITEMS_PER_SEED
+            ):
+                return matches
+        return await self._get_similar_tracks_from_seeds([seed])
 
     async def _get_global_recommendations(self) -> AsyncIterator[RecommendationFolder]:
         """Yield global chart recommendation folders (worldwide top artists and tracks)."""

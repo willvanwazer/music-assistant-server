@@ -173,7 +173,7 @@ async def test_statsfm_rankings_drive_top_artists_and_existing_discovery_rows(
     monkeypatch.setattr(manager, "get_or_resolve_artist", AsyncMock(side_effect=artists))
     monkeypatch.setattr(manager, "_get_recent_play_seeds", recent)
     monkeypatch.setattr(manager, "_get_similar_artists_from_seeds", similar_artists)
-    monkeypatch.setattr(manager, "_get_similar_tracks_from_seeds", similar_tracks)
+    monkeypatch.setattr(manager, "_get_catalog_tracks_from_seeds", similar_tracks)
     rows = [row async for row in manager._get_personalized_recommendations()]
     assert [row.item_id for row in rows] == [
         f"{provider.instance_id}_{suffix}"
@@ -231,3 +231,103 @@ async def test_manual_cache_refresh_keeps_visible_rows_until_replacement(provide
     provider.mass.cache.clear.assert_any_await(
         category_filter=CACHE_CATEGORY_STATSFM, provider_filter=provider.instance_id
     )
+
+
+def _track(name: str, artist: str = "Other", item_id: str | None = None) -> Track:
+    """Build a catalog track with artist credits."""
+    return Track(
+        item_id=item_id or name,
+        provider="spotify",
+        name=name,
+        provider_mappings=set(),
+        artists=[Artist(item_id=artist, provider="spotify", name=artist, provider_mappings=set())],
+    )
+
+
+async def test_catalog_recommendations_balance_seeds_and_filter_owned_tracks(
+    provider: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Native recommendations interleave ranked seeds without repeating seeds or owned songs."""
+    manager = LastFMRecommendationManager(provider)
+    fetch = AsyncMock(
+        side_effect=[
+            [_track("A1"), _track("Seed A", "A"), _track("Shared"), _track("Owned")],
+            [_track("B1"), _track("Shared", item_id="alternate"), _track("Owned"), _track("B2")],
+        ]
+    )
+    monkeypatch.setattr(manager, "_get_catalog_tracks_for_seed", fetch)
+    monkeypatch.setattr(
+        manager,
+        "_is_in_library",
+        AsyncMock(side_effect=lambda data, _media_type: data["name"] == "Owned"),
+    )
+    tracks = await manager._get_catalog_tracks_from_seeds(
+        [_SeedTrack("A", "Seed A"), _SeedTrack("B", "Seed B")]
+    )
+    assert [track.name for track in tracks] == ["A1", "B1", "Shared", "B2"]
+
+
+async def test_catalog_lookup_uses_connected_provider_and_alternate_credit(
+    provider: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A collaboration can resolve under its lead artist and use native provider similarity."""
+    manager = LastFMRecommendationManager(provider)
+    seed = _track("Duet", "Lead")
+    similar = [_track("New match")]
+    resolve = AsyncMock(side_effect=[None, seed])
+    fallback = AsyncMock()
+    provider.mass.music.tracks.similar_tracks = AsyncMock(return_value=similar)
+    monkeypatch.setattr(manager, "get_or_resolve_track", resolve)
+    monkeypatch.setattr(manager, "_get_similar_tracks_from_seeds", fallback)
+    assert (
+        await manager._get_catalog_tracks_for_seed(_SeedTrack("Guest", "Duet", ("Lead",)))
+        == similar
+    )
+    assert [call.args[0]["artist"] for call in resolve.await_args_list] == ["Guest", "Lead"]
+    assert provider.mass.music.tracks.similar_tracks.await_args.args == (seed.item_id, "spotify")
+    fallback.assert_not_awaited()
+
+
+async def test_catalog_miss_falls_back_to_lastfm(
+    provider: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A seed absent from connected catalogs can still produce Last.fm matches."""
+    manager = LastFMRecommendationManager(provider)
+    monkeypatch.setattr(manager, "get_or_resolve_track", AsyncMock(return_value=None))
+    tracks = [_track("Fallback")]
+    fallback = AsyncMock(return_value=tracks)
+    monkeypatch.setattr(manager, "_get_similar_tracks_from_seeds", fallback)
+    seed = _SeedTrack("Artist", "Missing")
+    assert await manager._get_catalog_tracks_for_seed(seed) == tracks
+    fallback.assert_awaited_once_with([seed])
+
+
+async def test_catalog_failures_preserve_previous_generation(
+    provider: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unavailable sources must not turn an existing recommendation row into an empty row."""
+    manager = LastFMRecommendationManager(provider)
+    monkeypatch.setattr(
+        manager,
+        "_get_catalog_tracks_for_seed",
+        AsyncMock(side_effect=ResourceTemporarilyUnavailable("offline")),
+    )
+    with pytest.raises(ResourceTemporarilyUnavailable):
+        await manager._get_catalog_tracks_from_seeds([_SeedTrack("Artist", "Track")])
+
+
+async def test_catalog_partial_failure_keeps_usable_matches(
+    provider: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One unavailable seed does not suppress the recommendations from another seed."""
+    manager = LastFMRecommendationManager(provider)
+    track = _track("Match")
+    monkeypatch.setattr(
+        manager,
+        "_get_catalog_tracks_for_seed",
+        AsyncMock(side_effect=[ResourceTemporarilyUnavailable("offline"), [track]]),
+    )
+    monkeypatch.setattr(manager, "_is_in_library", AsyncMock(return_value=False))
+    assert await manager._get_catalog_tracks_from_seeds(
+        [_SeedTrack("A", "First"), _SeedTrack("B", "Second")]
+    ) == [track]

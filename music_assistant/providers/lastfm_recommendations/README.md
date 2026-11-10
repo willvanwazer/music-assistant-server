@@ -10,7 +10,11 @@ artists and top twenty distinct tracks in that period. Rankings follow the profi
 stats.fm sorting preference, including listening time or stream count. Artist cards
 resolve to the connected music catalogs so they can be browsed and played.
 
-Last.fm supplies similarity matches; stats.fm supplies the personal listening history.
+Last.fm supplies similar artists. Track discovery first asks the connected music
+catalog for recommendations, with Last.fm as fallback. This supports recent releases
+that Last.fm has not yet matched. Results are interleaved across the ranked seed tracks,
+with duplicates, the seeds themselves, and owned songs removed. Stats.fm supplies the
+personal listening history.
 The row subtitles identify stats.fm and the selected period. A blank stats.fm profile
 keeps the existing Music Assistant recent-play behavior.
 
