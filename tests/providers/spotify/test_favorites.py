@@ -73,6 +73,7 @@ def snapshots(sync: Any, local: Artist | None, remote: bool) -> None:
     ctrl.get_library_item_by_prov_id = AsyncMock(return_value=local)
     ctrl.add_item_to_library = AsyncMock(return_value=artist(False))
     ctrl.set_favorite = AsyncMock()
+    ctrl.set_provider_mappings = AsyncMock()
 
 
 @pytest.mark.asyncio
@@ -199,3 +200,14 @@ async def test_missing_library_item_is_restored(sync: Any) -> None:
     snapshots(sync, None, True)
     assert (await sync.run())["to_music_assistant"] == 1
     sync.provider.library_remove.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_browsed_item_becomes_visible_in_library(sync: Any) -> None:
+    """A Spotify save must expose a cached item in MA favorites immediately."""
+    item = artist(False)
+    assert not next(iter(item.provider_mappings)).in_library
+    snapshots(sync, item, True)
+    await sync.run()
+    assert next(iter(item.provider_mappings)).in_library
+    sync.mass.music.get_controller.return_value.set_provider_mappings.assert_awaited_once()

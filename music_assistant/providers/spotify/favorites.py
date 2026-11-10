@@ -287,9 +287,12 @@ class FavoritesSync:
                 provider_item.provider = self.provider.instance_id
                 if not await self.provider.library_add(provider_item):
                     raise RuntimeError("Spotify did not accept the favorite")
+                await self._mark_in_library(media_type, item_id, current)
             elif not await self.provider.library_remove(item_id, media_type):
                 raise RuntimeError("Spotify did not accept the favorite removal")
             return "to_spotify"
+        if current and desired:
+            await self._mark_in_library(media_type, item_id, current)
         if bool(current and current.favorite) != desired:
             if current is None:
                 if not remote[item_id].available:
@@ -300,3 +303,21 @@ class FavoritesSync:
             await ctrl.set_favorite(current.item_id, desired)
             return "to_music_assistant"
         return None
+
+    async def _mark_in_library(
+        self, media_type: MediaType, item_id: str, item: FavoriteItem
+    ) -> None:
+        # A previously browsed item can exist only in the metadata cache. A heart is
+        # invisible in library listings until its exact saved mapping is in-library.
+        changed = False
+        for mapping in item.provider_mappings:
+            if (
+                mapping.provider_instance == self.provider.instance_id
+                and mapping.item_id == item_id
+                and not mapping.in_library
+            ):
+                mapping.in_library = True
+                changed = True
+        if changed:
+            ctrl = self.mass.music.get_controller(media_type)
+            await ctrl.set_provider_mappings(item.item_id, item.provider_mappings)
