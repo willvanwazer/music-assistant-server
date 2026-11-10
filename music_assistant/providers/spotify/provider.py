@@ -90,6 +90,7 @@ from .constants import (
     LIKED_SONGS_FAKE_PLAYLIST_ID_PREFIX,
     SOLOIST_DATA_DIR_NAME,
 )
+from .favorites import CONF_SYNC_FAVORITES, FavoritesSync
 from .helpers import get_spotify_token
 from .parsers import (
     parse_album,
@@ -141,6 +142,7 @@ class SpotifyProvider(MusicProvider):
     dev_session_active: bool = False
     throttler: ThrottlerManager
     backend: SpotifyPlaybackBackend
+    _favorites_sync: FavoritesSync | None = None
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """
@@ -153,6 +155,13 @@ class SpotifyProvider(MusicProvider):
         audiobooks_supported = bool(getattr(self, "audiobooks_supported", False))
         return (
             CONF_ENTRY_UNOFFICIAL_PROVIDER,
+            ConfigEntry(
+                key=CONF_SYNC_FAVORITES,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                category="sync_options",
+                requires_reload=True,
+            ),
             ConfigEntry(
                 key=CONF_SPOTIFY_NORMALIZATION,
                 type=ConfigEntryType.BOOLEAN,
@@ -240,8 +249,18 @@ class SpotifyProvider(MusicProvider):
                 await self.backend.unload()
             raise
 
+    async def loaded_in_mass(self) -> None:
+        """Start the optional favorites reconciler after provider registration."""
+        await super().loaded_in_mass()
+        self._favorites_sync = None
+        if self.config.get_value(CONF_SYNC_FAVORITES, False):
+            self._favorites_sync = FavoritesSync(self)
+            self._favorites_sync.start()
+
     async def unload(self, is_removed: bool = False) -> None:
         """Handle close/cleanup of the provider."""
+        if sync := getattr(self, "_favorites_sync", None):
+            await sync.stop()
         try:
             if (backend := getattr(self, "backend", None)) is not None:
                 await backend.unload()
