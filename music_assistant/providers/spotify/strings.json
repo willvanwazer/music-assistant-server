@@ -122,6 +122,9 @@
   },
   "media": {
     "folder": {
+      "recently_played": {
+        "name": "Recently played on Spotify"
+      },
       "new_releases": {
         "name": "New Releases"
       },

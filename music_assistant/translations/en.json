@@ -2374,6 +2374,7 @@
   "provider.spotify.manifest.description": "Stream music, playlists, podcasts, and discover new songs via Spotify’s ecosystem.",
   "provider.spotify.media.folder.genres_and_moods.name": "Genres & Moods",
   "provider.spotify.media.folder.new_releases.name": "New Releases",
+  "provider.spotify.media.folder.recently_played.name": "Recently played on Spotify",
   "provider.spotify.media.playlist.liked_songs.name": "Liked Songs {0}",
   "provider.spotify.media.podcast.unknown_podcast.name": "Unknown Podcast",
   "provider.spotify.setup_flow.abort.account_already_configured": "This Spotify account is already set up in Music Assistant. Each account can only be added once — sign in with a different account, or reconfigure the existing one instead.",
