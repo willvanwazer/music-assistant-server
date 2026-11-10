@@ -268,7 +268,7 @@ class ArtistsController(MediaControllerBase[Artist]):
 
         For a library item, the top tracks of all the artist's providers are aggregated (and
         deduplicated), optionally limited to a single provider instance. For a provider
-        item, that provider's top tracks listing is returned (may be empty if not supported).
+        item, its provider is used unless a metadata source is explicitly selected.
 
         :param item_id: The item ID of the artist.
         :param provider_instance_id_or_domain: The provider instance ID or domain of the artist.
@@ -276,6 +276,11 @@ class ArtistsController(MediaControllerBase[Artist]):
         """
         if provider_instance_id_or_domain == "library":
             return await self.get_library_artist_toptracks(item_id, provider_filter=provider_filter)
+        if metadata_provider := self._artist_metadata_provider(
+            provider_filter, ProviderFeature.ARTIST_TOPTRACKS
+        ):
+            artist = await self.get(item_id, provider_instance_id_or_domain)
+            return await metadata_provider.get_artist_toptracks(artist)
         self._validate_provider_filter(provider_instance_id_or_domain, provider_filter)
         return await self.get_provider_artist_toptracks(item_id, provider_instance_id_or_domain)
 
@@ -290,7 +295,7 @@ class ArtistsController(MediaControllerBase[Artist]):
 
         For a library item, the top albums of all the artist's providers are aggregated (and
         deduplicated), optionally limited to a single provider instance. For a provider
-        item, that provider's top albums listing is returned (may be empty if not supported).
+        item, its provider is used unless a metadata source is explicitly selected.
 
         :param item_id: The item ID of the artist.
         :param provider_instance_id_or_domain: The provider instance ID or domain of the artist.
@@ -298,6 +303,11 @@ class ArtistsController(MediaControllerBase[Artist]):
         """
         if provider_instance_id_or_domain == "library":
             return await self.get_library_artist_topalbums(item_id, provider_filter=provider_filter)
+        if metadata_provider := self._artist_metadata_provider(
+            provider_filter, ProviderFeature.ARTIST_TOPALBUMS
+        ):
+            artist = await self.get(item_id, provider_instance_id_or_domain)
+            return await metadata_provider.get_artist_topalbums(artist)
         self._validate_provider_filter(provider_instance_id_or_domain, provider_filter)
         return await self.get_provider_artist_topalbums(item_id, provider_instance_id_or_domain)
 
@@ -313,8 +323,7 @@ class ArtistsController(MediaControllerBase[Artist]):
 
         For a library item, the similar artists of all the artist's providers are aggregated
         (and deduplicated), optionally limited to a single provider instance. For a provider
-        item, that provider's similar artists listing is returned (may be empty if not
-        supported).
+        item, its provider is used unless a metadata source is explicitly selected.
 
         :param item_id: The item ID of the artist.
         :param provider_instance_id_or_domain: The provider instance ID or domain of the artist.
@@ -325,6 +334,11 @@ class ArtistsController(MediaControllerBase[Artist]):
             return await self.get_library_artist_similar_artists(
                 item_id, provider_filter=provider_filter, limit=limit
             )
+        if metadata_provider := self._artist_metadata_provider(
+            provider_filter, ProviderFeature.SIMILAR_ARTISTS
+        ):
+            artist = await self.get(item_id, provider_instance_id_or_domain)
+            return await metadata_provider.get_similar_artists(artist, limit=limit)
         self._validate_provider_filter(provider_instance_id_or_domain, provider_filter)
         return await self.get_provider_artist_similar_artists(
             item_id, provider_instance_id_or_domain, limit=limit
@@ -1030,6 +1044,25 @@ class ArtistsController(MediaControllerBase[Artist]):
                 }
             )
         return Artist.from_dict({**item.to_dict(), "provider_mappings": provider_mappings})
+
+    def _artist_metadata_provider(
+        self, provider_filter: str | None, feature: ProviderFeature
+    ) -> MetadataProvider | None:
+        """Resolve an explicitly selected metadata source for a catalog artist."""
+        if not provider_filter:
+            return None
+        provider = self.mass.get_provider(provider_filter)
+        if (
+            provider is None
+            or not provider.available
+            or provider.type not in (ProviderType.METADATA, ProviderType.PLUGIN)
+            or feature not in provider.supported_features
+        ):
+            return None
+        allowed = self._ensure_provider_filter(provider_filter)
+        if allowed is not None and provider.instance_id not in allowed:
+            return None
+        return cast("MetadataProvider", provider)
 
     def _validate_provider_filter(
         self, provider_instance_id_or_domain: str, provider_filter: str | None
