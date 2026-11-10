@@ -563,7 +563,7 @@ class LastFMRecommendationManager:
             if track is None:
                 continue
             if matches := await self.mass.music.tracks.similar_tracks(
-                track.item_id, track.provider, limit=SIMILAR_ITEMS_PER_SEED
+                track.item_id, track.provider, limit=SIMILAR_ITEMS_PER_SEED, allow_lookup=True
             ):
                 return matches
         return await self._get_similar_tracks_from_seeds([seed])

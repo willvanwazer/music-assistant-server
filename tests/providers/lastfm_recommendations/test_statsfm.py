@@ -287,6 +287,7 @@ async def test_catalog_lookup_uses_connected_provider_and_alternate_credit(
     )
     assert [call.args[0]["artist"] for call in resolve.await_args_list] == ["Guest", "Lead"]
     assert provider.mass.music.tracks.similar_tracks.await_args.args == (seed.item_id, "spotify")
+    assert provider.mass.music.tracks.similar_tracks.await_args.kwargs["allow_lookup"] is True
     fallback.assert_not_awaited()
 
 
