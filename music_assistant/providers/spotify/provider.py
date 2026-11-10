@@ -1793,7 +1793,7 @@ class SpotifyProvider(MusicProvider):
 
             response.raise_for_status()
             result: dict[str, Any] = await response.json(loads=json_loads)
-            if etag := response.headers.get("ETag"):
+            if isinstance(result, dict) and (etag := response.headers.get("ETag")):
                 result["etag"] = etag
             return result
 
