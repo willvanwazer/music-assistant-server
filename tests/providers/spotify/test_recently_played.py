@@ -84,6 +84,7 @@ def provider() -> SpotifyProvider:
     prov.logger = MagicMock()
     mass = MagicMock()
     mass.cache.get = AsyncMock(return_value=None)
+    mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     mass.cache.set = AsyncMock()
     use_real_create_task(mass)
     prov.mass = mass
@@ -132,6 +133,26 @@ async def test_recently_played_items_resolve_sources(
     assert [item.item_id for item in items] == ["p1", "al1", "ar1", "t5"]
     assert isinstance(items[1], Album)
     assert isinstance(items[3], Track)
+
+
+@pytest.mark.asyncio
+async def test_recently_played_plays_are_cached(
+    provider: SpotifyProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cached listing is served without calling Spotify."""
+    cached = [_play("t1", None)]
+    monkeypatch.setattr(
+        provider.mass.cache,
+        "get_with_freshness",
+        AsyncMock(return_value=(cached, True, True)),
+    )
+    get_data = AsyncMock()
+    monkeypatch.setattr(provider, "_get_data", get_data)
+
+    items = await provider.get_recommendation_items(RECENTLY_PLAYED_ROW_ID)
+
+    get_data.assert_not_awaited()
+    assert [item.item_id for item in items] == ["t1"]
 
 
 @pytest.mark.asyncio

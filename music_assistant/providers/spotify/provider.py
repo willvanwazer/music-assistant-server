@@ -124,6 +124,7 @@ class _PlaylistPaginationState:
 # recommendation row with what the account recently played on Spotify
 RECENTLY_PLAYED_ROW_ID = "recently_played"
 RECENTLY_PLAYED_LIMIT = 20
+RECENTLY_PLAYED_CACHE_SECONDS = 60
 
 
 class SpotifyProvider(MusicProvider):
@@ -573,9 +574,8 @@ class SpotifyProvider(MusicProvider):
         Plays are shown as the album, playlist or artist they were played from,
         like Spotify's own home screen, and as the track itself otherwise.
         """
-        result = await self._get_data("me/player/recently-played", limit=50)
         sources = recently_played_sources(
-            result.get("items") or [],
+            await self._get_recently_played_plays(),
             self._get_liked_songs_playlist_id(),
             RECENTLY_PLAYED_LIMIT,
         )
@@ -601,6 +601,17 @@ class SpotifyProvider(MusicProvider):
 
         resolved = await asyncio.gather(*(resolve(*source) for source in sources))
         return [item for item in resolved if item is not None]
+
+    @use_cache(
+        RECENTLY_PLAYED_CACHE_SECONDS,
+        allow_bypass=False,
+        # serve the last listing at once and refresh it in the background
+        allow_expired_cache=True,
+    )
+    async def _get_recently_played_plays(self) -> list[dict[str, Any]]:
+        """Get the raw plays of me/player/recently-played, newest first."""
+        result = await self._get_data("me/player/recently-played", limit=50)
+        return [play for play in result.get("items") or [] if play]
 
     @use_cache()
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
