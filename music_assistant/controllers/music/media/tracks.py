@@ -1018,6 +1018,15 @@ class TracksController(MediaControllerBase[Track]):
                 err,
             )
             return None, err
+        self.logger.info(
+            "Similar-track candidates: provider=%s (%s), seed=%s [%s], count=%s, candidates=%s",
+            provider.name,
+            provider.instance_id,
+            ref_item.name,
+            ref_item.uri,
+            len(result),
+            "; ".join(f"{track.name} [{track.uri}]" for track in result),
+        )
         return result, None
 
     async def _match_similar_tracks_provider(

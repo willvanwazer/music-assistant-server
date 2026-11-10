@@ -14,6 +14,7 @@ from music_assistant_models.media_items import (
     BrowseFolder,
     ProviderMapping,
     SearchResults,
+    Track,
 )
 
 from music_assistant.controllers.music import MusicController
@@ -23,6 +24,19 @@ from music_assistant.mass import MusicAssistant
 from music_assistant.models.metadata_provider import MetadataProvider
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.plugin import PluginProvider
+
+
+def _candidate_tracks() -> list[Track]:
+    """Build concrete candidates so logging exercises real track identifiers."""
+    return [
+        Track(
+            item_id=item_id,
+            provider="spotify",
+            name=f"Candidate {item_id}",
+            provider_mappings=set(),
+        )
+        for item_id in ("t1", "t2")
+    ]
 
 
 def _make_prov(
@@ -88,12 +102,13 @@ async def test_similar_tracks_falls_back_to_metadata_provider() -> None:
     """When the music provider doesn't support SIMILAR_TRACKS, try metadata providers."""
     mass = Mock()
     metadata_prov = Mock(spec=MetadataProvider)
+    metadata_prov.name = "Last.fm"
     metadata_prov.instance_id = "meta_a"
     metadata_prov.type = ProviderType.METADATA
     metadata_prov.available = True
     metadata_prov.supported_features = {ProviderFeature.SIMILAR_TRACKS}
     metadata_prov.priority = 50
-    metadata_prov.get_similar_tracks = AsyncMock(return_value=["t1", "t2"])
+    metadata_prov.get_similar_tracks = AsyncMock(return_value=_candidate_tracks())
     music_prov = _make_prov("m_a", ProviderType.MUSIC, set())
 
     def get_provider(instance_id: str, **_: object) -> Mock | None:
@@ -103,6 +118,8 @@ async def test_similar_tracks_falls_back_to_metadata_provider() -> None:
     mass.get_providers_supporting_feature.return_value = [metadata_prov]
 
     ref_item = Mock()
+    ref_item.name = "Seed song"
+    ref_item.uri = "spotify://track/abc"
     ref_item.provider_mappings = [
         ProviderMapping(
             item_id="abc",
@@ -114,14 +131,20 @@ async def test_similar_tracks_falls_back_to_metadata_provider() -> None:
 
     controller = TracksController.__new__(TracksController)
     controller.mass = mass
+    controller.logger = Mock()
     controller.get = AsyncMock(return_value=ref_item)  # type: ignore[method-assign]
 
     result = await controller.similar_tracks("abc", "m_a", limit=5)
 
-    assert result == ["t1", "t2"]
+    assert result == _candidate_tracks()
     metadata_prov.get_similar_tracks.assert_awaited_once()
     call_kwargs = metadata_prov.get_similar_tracks.await_args.kwargs
     assert call_kwargs.get("limit") == 5
+    log_args = controller.logger.info.call_args.args
+    log_message = log_args[0] % log_args[1:]
+    assert "Last.fm (meta_a)" in log_message
+    assert "Seed song [spotify://track/abc]" in log_message
+    assert "Candidate t1 [spotify://track/t1]" in log_message
 
 
 async def test_similar_tracks_skips_failed_provider_mapping() -> None:
@@ -134,7 +157,7 @@ async def test_similar_tracks_skips_failed_provider_mapping() -> None:
     working_prov = Mock(spec=MusicProvider)
     working_prov.name = "Working"
     working_prov.supported_features = {ProviderFeature.SIMILAR_TRACKS}
-    working_prov.get_similar_tracks = AsyncMock(return_value=["t1", "t2"])
+    working_prov.get_similar_tracks = AsyncMock(return_value=_candidate_tracks())
     mass.get_provider.side_effect = lambda instance_id: {
         "failed": failed_prov,
         "working": working_prov,
@@ -162,7 +185,7 @@ async def test_similar_tracks_skips_failed_provider_mapping() -> None:
 
     result = await controller.similar_tracks("seed", "library")
 
-    assert result == ["t1", "t2"]
+    assert result == _candidate_tracks()
     failed_prov.get_similar_tracks.assert_awaited_once()
     working_prov.get_similar_tracks.assert_awaited_once()
 

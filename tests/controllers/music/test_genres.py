@@ -2130,8 +2130,9 @@ class TestGenreExclusion:
 class TestPropagateGenreMappings:
     """Tests for _propagate_genre_mappings_to_parents."""
 
+    @pytest.mark.parametrize("provider_domain", ["filesystem_local", "spotify"])
     async def test_propagation_derives_album_genre(
-        self, mass: MusicAssistant, genre_ctrl: GenreController
+        self, mass: MusicAssistant, genre_ctrl: GenreController, provider_domain: str
     ) -> None:
         """Track genre mappings are propagated to the track's album."""
         instance_id = "fs_local_instance_album"
@@ -2160,7 +2161,7 @@ class TestPropagateGenreMappings:
             {
                 "media_type": "track",
                 "item_id": track_id,
-                "provider_domain": "filesystem_local",
+                "provider_domain": provider_domain,
                 "provider_instance": instance_id,
                 "provider_item_id": f"track_{track_id}",
             },
@@ -2169,7 +2170,8 @@ class TestPropagateGenreMappings:
         await genre_ctrl.add_media_mapping(genre_id, MediaType.TRACK, track_id, "PropAlbumGenre")
 
         mock_provider = MagicMock()
-        mock_provider.domain = "filesystem_local"
+        mock_provider.domain = provider_domain
+        mock_provider.is_streaming_provider = provider_domain == "spotify"
         mock_provider.instance_id = instance_id
         with (
             patch.object(
@@ -2241,8 +2243,9 @@ class TestPropagateGenreMappings:
         )
         assert len(rows) == 1
 
+    @pytest.mark.parametrize("provider_domain", ["filesystem_local", "spotify"])
     async def test_propagation_respects_exclusion(
-        self, mass: MusicAssistant, genre_ctrl: GenreController
+        self, mass: MusicAssistant, genre_ctrl: GenreController, provider_domain: str
     ) -> None:
         """Excluded genre-album pairs are not derived even when propagation is enabled."""
         instance_id = "fs_local_instance_excl"
@@ -2271,7 +2274,7 @@ class TestPropagateGenreMappings:
             {
                 "media_type": "track",
                 "item_id": track_id,
-                "provider_domain": "filesystem_local",
+                "provider_domain": provider_domain,
                 "provider_instance": instance_id,
                 "provider_item_id": f"track_{track_id}",
             },
@@ -2281,7 +2284,8 @@ class TestPropagateGenreMappings:
         await genre_ctrl.exclude_genre_from_media_item(genre_id, MediaType.ALBUM, album_id)
 
         mock_provider = MagicMock()
-        mock_provider.domain = "filesystem_local"
+        mock_provider.domain = provider_domain
+        mock_provider.is_streaming_provider = provider_domain == "spotify"
         mock_provider.instance_id = instance_id
         with (
             patch.object(
