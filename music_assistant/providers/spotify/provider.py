@@ -462,7 +462,7 @@ class SpotifyProvider(MusicProvider):
 
         return await super().browse(path)
 
-    @use_cache()
+    @use_cache(allow_expired_cache=True)
     async def search(
         self, search_query: str, media_types: list[MediaType] | None = None, limit: int = 5
     ) -> SearchResults:
@@ -497,25 +497,24 @@ class SpotifyProvider(MusicProvider):
 
         return searchresult
 
-    @use_cache()
+    @use_cache(allow_expired_cache=True)
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
         artist_obj = await self._get_data(f"artists/{prov_artist_id}")
         return parse_artist(artist_obj, self)
 
-    @use_cache()
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
-        album_obj = await self._get_data(f"albums/{prov_album_id}")
+        album_obj = await self._get_album_data(prov_album_id)
         return parse_album(album_obj, self)
 
-    @use_cache()
+    @use_cache(allow_expired_cache=True)
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         track_obj = await self._get_data(f"tracks/{prov_track_id}")
         return parse_track(track_obj, self)
 
-    @use_cache()
+    @use_cache(3600 * 3, allow_expired_cache=True)
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
         if prov_playlist_id == self._get_liked_songs_playlist_id():
@@ -752,6 +751,22 @@ class SpotifyProvider(MusicProvider):
     @use_cache(86400 * 365, allow_expired_cache=True)  # 1 year - album track listings are immutable
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all album tracks for given album id."""
+        album_obj = await self._get_album_data(prov_album_id)
+        embedded = album_obj.get("tracks", {})
+        items = embedded.get("items", [])
+        # Album details already contain the first track page. Only use it as the
+        # complete listing when Spotify explicitly reports that nothing is missing.
+        if (
+            not embedded.get("next")
+            and embedded.get("offset", 0) == 0
+            and embedded.get("total") == len(items)
+        ):
+            album = parse_album(album_obj, self)
+            tracks = [parse_track(item, self) for item in items if item and item.get("id")]
+            for track in tracks:
+                track.album = album
+                track.metadata.images = album.metadata.images
+            return tracks
         return [
             parse_track(item, self)
             async for item in self._get_all_items(f"albums/{prov_album_id}/tracks")
@@ -1627,6 +1642,11 @@ class SpotifyProvider(MusicProvider):
             raise
 
         return chapters_data
+
+    @use_cache(allow_expired_cache=True)
+    async def _get_album_data(self, prov_album_id: str) -> dict[str, Any]:
+        """Get shared album metadata and embedded tracks from Spotify."""
+        return await self._get_data(f"albums/{prov_album_id}")
 
     async def _get_all_items(
         self, endpoint: str, key: str = "items", limit: int = 50, **kwargs: Any
