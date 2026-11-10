@@ -186,7 +186,7 @@ async def test_browse_cache_uses_global_session_checksum(
     await provider._get_new_releases()
     await provider._get_categories("de_DE")
 
-    assert cache_get.await_count == 2
+    assert cache_get.await_count == 4
     for call in cache_get.await_args_list:
         assert call.kwargs["checksum"] == "global_session_v1"
 

@@ -157,11 +157,15 @@ def use_cache(
                 return _reconstruct(cachedata)
 
             # cache miss (or expired entry without stale-while-revalidate):
-            # fetch synchronously, store in background
+            # Keep the shared flight alive until the cache write finishes. Otherwise
+            # a caller arriving between the fetch and the write starts another fetch.
             async def _fetch_and_store() -> R:
                 result = await func(self, *args, **kwargs)
                 if cache_none or result is not None:
-                    self.mass.create_task(_store_task(result))
+                    try:
+                        await _store_task(result)
+                    except Exception:
+                        LOGGER.exception("Cache write failed for %s/%s", provider_id, cache_key)
                 return result
 
             # a caller that bypasses this method's cache asked for the backend, so it
@@ -177,6 +181,20 @@ def use_cache(
                 # against the shielded future
                 outcome: _FlightOutcome[R] = _FlightOutcome()
                 try:
+                    # A previous flight can finish while this caller's initial
+                    # SQLite read is returning its miss. Recheck inside the new
+                    # flight before issuing another provider request.
+                    data, fresh, found = await cache.get_with_freshness(
+                        cache_key,
+                        provider=provider_id,
+                        checksum=cache_checksum,
+                        category=category,
+                        allow_bypass=allow_bypass,
+                        base_class=base_class,
+                    )
+                    if found and fresh and (cache_none or data is not None):
+                        outcome.result = _reconstruct(data)
+                        return outcome
                     outcome.result = await _fetch_and_store()
                 except Exception as err:
                     outcome.error = err

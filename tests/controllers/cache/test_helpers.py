@@ -235,10 +235,10 @@ async def test_swr_serves_stale_and_refreshes(
     assert provider.calls == 1
 
 
-async def test_wrapper_performs_single_row_fetch(
+async def test_wrapper_rechecks_misses_but_reads_hits_once(
     cache_controller: CacheController, provider: _FakeProvider
 ) -> None:
-    """Test that one wrapper call does exactly one db row fetch (miss, fresh and stale)."""
+    """Only a miss needs a second lookup to close the completed-flight race."""
     assert cache_controller.database is not None
     # cache miss
     provider.result = "value"
@@ -246,7 +246,7 @@ async def test_wrapper_performs_single_row_fetch(
         cache_controller.database, "get_row", wraps=cache_controller.database.get_row
     ) as spy:
         assert await provider.fetch_swr("a") == "value"
-    assert spy.await_count == 1
+    assert spy.await_count == 2
     # fresh hit
     await _wait_for_stored(cache_controller, "fetch_swr.a")
     with patch.object(
@@ -282,6 +282,71 @@ async def test_concurrent_misses_share_one_fetch(
         assert provider.calls == 1
         await _wait_for_stored(cache_controller, "fetch.a")
     assert store.await_count == 1
+
+
+async def test_cache_write_remains_part_of_shared_flight(
+    cache_controller: CacheController, provider: _FakeProvider
+) -> None:
+    """A caller arriving during a cache write must not fetch the provider again."""
+    provider.result = "value"
+    writing = asyncio.Event()
+    release = asyncio.Event()
+    original_set = cache_controller.set
+
+    async def delayed_set(*args: Any, **kwargs: Any) -> None:
+        writing.set()
+        await release.wait()
+        await original_set(*args, **kwargs)
+
+    with patch.object(cache_controller, "set", side_effect=delayed_set):
+        first = asyncio.create_task(provider.fetch("a"))
+        await asyncio.wait_for(writing.wait(), timeout=1)
+        second = asyncio.create_task(provider.fetch("a"))
+        await asyncio.sleep(0.05)
+        assert provider.calls == 1
+        assert not first.done()
+        release.set()
+        results = await asyncio.gather(first, second)
+        assert all(result == "value" for result in results)
+    assert await provider.fetch("a") == "value"
+    assert provider.calls == 1
+
+
+async def test_delayed_miss_rechecks_after_another_flight_finishes(
+    cache_controller: CacheController, provider: _FakeProvider
+) -> None:
+    """A late SQLite miss cannot trigger a second fetch after the first is stored."""
+    provider.result = "value"
+    reading = asyncio.Event()
+    release = asyncio.Event()
+    original_get = cache_controller.get_with_freshness
+    calls = 0
+
+    async def delayed_get(*args: Any, **kwargs: Any) -> tuple[Any, bool, bool]:
+        nonlocal calls
+        calls += 1
+        result = await original_get(*args, **kwargs)
+        if calls == 1:
+            reading.set()
+            await release.wait()
+        return result
+
+    with patch.object(cache_controller, "get_with_freshness", side_effect=delayed_get):
+        delayed = asyncio.create_task(provider.fetch("a"))
+        await asyncio.wait_for(reading.wait(), timeout=1)
+        assert await provider.fetch("a") == "value"
+        release.set()
+        assert await delayed == "value"
+    assert provider.calls == 1
+
+
+async def test_cache_write_failure_preserves_provider_result(
+    cache_controller: CacheController, provider: _FakeProvider
+) -> None:
+    """A failed cache write does not discard a successfully fetched catalog item."""
+    provider.result = "value"
+    with patch.object(cache_controller, "set", side_effect=RuntimeError("write failed")):
+        assert await provider.fetch("a") == "value"
 
 
 async def test_each_caller_gets_its_own_result_object(provider: _FakeProvider) -> None:
