@@ -230,8 +230,10 @@ class FavoritesSync:
                     keys.add(min(ids))
             for item_id in sorted(keys):
                 item = local_items.get(item_id)
-                local_favorite = bool(item and item.favorite)
                 remote_favorite = item_id in remote_items
+                # A removed database row is not an explicit unheart. Restore saved items
+                # instead of using a library reset to erase Spotify favorites.
+                local_favorite = bool(item.favorite) if item else remote_favorite
                 desired = reconcile(baseline.get(item_id), local_favorite, remote_favorite)
                 if not desired and (local_favorite or remote_favorite):
                     removals += 1

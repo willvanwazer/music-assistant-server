@@ -99,7 +99,8 @@ async def test_export_uses_provider_id(sync: FavoritesSync) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("local", "remote", "direction"), [(False, True, "to_spotify"), (True, False, "to_music_assistant")]
+    ("local", "remote", "direction"),
+    [(False, True, "to_spotify"), (True, False, "to_music_assistant")],
 )
 async def test_removals(sync: FavoritesSync, local: bool, remote: bool, direction: str) -> None:
     """Each side's removal propagates after the initial union without deleting MA items."""
@@ -187,3 +188,14 @@ def test_trigger_is_a_valid_api_handler(sync: FavoritesSync) -> None:
     """The dynamically registered command resolves its runtime return annotation."""
     handler = APICommandHandler.parse("test/favorites", sync.trigger)
     assert handler.command == "test/favorites"
+
+
+@pytest.mark.asyncio
+async def test_missing_library_item_is_restored(sync: FavoritesSync) -> None:
+    """Losing a cached MA row must never turn into a Spotify unsave."""
+    sync._write_state(
+        {"version": 1, "account_id": "account", "baseline": {"artist": {"sp1": True}}}
+    )
+    snapshots(sync, None, True)
+    assert (await sync.run())["to_music_assistant"] == 1
+    sync.provider.library_remove.assert_not_awaited()
