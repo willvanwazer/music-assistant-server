@@ -1209,8 +1209,7 @@ class SpotifyProvider(MusicProvider):
         """
         Get what the account recently played anywhere on Spotify, newest first.
 
-        Plays are shown as the album, playlist or artist they were played from,
-        like Spotify's own home screen, and as the track itself otherwise.
+        Plays are grouped by album or playlist, falling back to the track's album.
         """
         sources = recently_played_sources(
             await self._get_recently_played_plays(),
@@ -1220,6 +1219,11 @@ class SpotifyProvider(MusicProvider):
 
         async def resolve(kind: str, item_id: str, track: dict[str, Any]) -> MediaItemType | None:
             try:
+                controller = self.mass.music.get_controller(MediaType(kind))
+                if library_item := await controller.get_library_item_by_prov_id(
+                    item_id, self.instance_id
+                ):
+                    return library_item
                 if kind == "album" and track.get("album", {}).get("id") == item_id:
                     # the play already carries the simplified album
                     return parse_album(track["album"], self)
@@ -1227,11 +1231,7 @@ class SpotifyProvider(MusicProvider):
                     return await self.get_album(item_id)
                 if kind == "playlist":
                     return await self.get_playlist(item_id)
-                if kind == "artist":
-                    return await self.get_artist(item_id)
-                track.setdefault("is_local", False)
-                track.setdefault("is_playable", True)
-                return parse_track(track, self)
+                return None
             except (MediaNotFoundError, KeyError) as err:
                 # a deleted playlist or an incomplete track is skipped, not fatal
                 self.logger.debug("Skipping recently played %s %s: %s", kind, item_id, err)

@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from music_assistant_models.enums import EventType
 from music_assistant_models.errors import MediaNotFoundError
-from music_assistant_models.media_items import Album, Artist, Playlist, Track
+from music_assistant_models.media_items import Album, Playlist
 
 from music_assistant.providers.spotify.parsers import recently_played_sources
 from music_assistant.providers.spotify.provider import (
@@ -59,20 +59,20 @@ def test_sources_group_plays_by_context() -> None:
             "context": {"type": "collection", "uri": "spotify:user:x:collection"},
         },
         {"track": None, "context": None},
-        _play("t6", ("artist", "ar1")),
+        _play("t6", ("album", "al3"), "al3"),
     ]
     assert [(kind, item_id) for kind, item_id, _ in recently_played_sources(plays, LIKED, 10)] == [
         ("playlist", "p1"),
         ("album", "al2"),
-        ("track", "t4"),
+        ("album", "al1"),
         ("playlist", LIKED),
-        ("artist", "ar1"),
+        ("album", "al3"),
     ]
 
 
 def test_sources_respect_limit() -> None:
     """No more than the limit is returned."""
-    plays = [_play(f"t{i}", None) for i in range(10)]
+    plays = [_play(f"t{i}", None, f"al{i}") for i in range(10)]
     assert len(recently_played_sources(plays, LIKED, 3)) == 3
 
 
@@ -87,6 +87,9 @@ def provider() -> SpotifyProvider:
     mass.cache.get = AsyncMock(return_value=None)
     mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     mass.cache.set = AsyncMock()
+    mass.music.get_controller.return_value.get_library_item_by_prov_id = AsyncMock(
+        return_value=None
+    )
     use_real_create_task(mass)
     prov.mass = mass
     return prov
@@ -104,15 +107,15 @@ async def test_rows_list_recently_played(provider: SpotifyProvider) -> None:
 async def test_recently_played_items_resolve_sources(
     provider: SpotifyProvider, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Contexts resolve to albums, playlists and artists; missing ones are skipped."""
+    """Contexts resolve to containers, standalone songs to albums; missing ones are skipped."""
     get_data = AsyncMock(
         return_value={
             "items": [
                 _play("t1", ("playlist", "p1")),
                 _play("t2", ("album", "al1")),
                 _play("t3", ("playlist", "gone")),
-                _play("t4", ("artist", "ar1")),
-                _play("t5", None),
+                _play("t4", ("artist", "ar1"), "al2"),
+                _play("t5", None, "al3"),
             ]
         }
     )
@@ -124,9 +127,6 @@ async def test_recently_played_items_resolve_sources(
         return MagicMock(spec=Playlist, item_id=item_id)
 
     monkeypatch.setattr(provider, "get_playlist", get_playlist)
-    monkeypatch.setattr(
-        provider, "get_artist", AsyncMock(return_value=MagicMock(spec=Artist, item_id="ar1"))
-    )
 
     items = await provider.get_recommendation_items(RECENTLY_PLAYED_ROW_ID)
 
@@ -136,9 +136,9 @@ async def test_recently_played_items_resolve_sources(
         object_id="spotify--test",
         data={"event": "recommendations_updated", "item_id": RECENTLY_PLAYED_ROW_ID},
     )
-    assert [item.item_id for item in items] == ["p1", "al1", "ar1", "t5"]
+    assert [item.item_id for item in items] == ["p1", "al1", "al2", "al3"]
     assert isinstance(items[1], Album)
-    assert isinstance(items[3], Track)
+    assert isinstance(items[3], Album)
 
 
 @pytest.mark.asyncio
@@ -158,10 +158,34 @@ async def test_recently_played_plays_are_cached(
     items = await provider.get_recommendation_items(RECENTLY_PLAYED_ROW_ID)
 
     get_data.assert_not_awaited()
-    assert [item.item_id for item in items] == ["t1"]
+    assert [item.item_id for item in items] == ["al1"]
 
 
 @pytest.mark.asyncio
 async def test_unknown_row_is_empty(provider: SpotifyProvider) -> None:
     """Rows this provider does not know return nothing."""
     assert list(await provider.get_recommendation_items("other")) == []
+
+
+def test_contextless_tracks_share_one_album_and_missing_albums_are_skipped() -> None:
+    """Standalone songs never appear as individual cards."""
+    plays = [_play("t1", None), _play("t2", None), {"track": {"id": "local"}}]
+    assert [(kind, item_id) for kind, item_id, _ in recently_played_sources(plays, LIKED, 10)] == [
+        ("album", "al1")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_recently_played_uses_library_identity_for_deduplication(
+    provider: SpotifyProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The unified home shelf can match Spotify and local history by URI."""
+    album = Album(item_id="42", provider="library", name="Album", provider_mappings=set())
+    cast(
+        "MagicMock", provider.mass.music.get_controller
+    ).return_value.get_library_item_by_prov_id.return_value = album
+    monkeypatch.setattr(
+        provider, "_get_data", AsyncMock(return_value={"items": [_play("t1", None)]})
+    )
+    items = await provider.get_recommendation_items(RECENTLY_PLAYED_ROW_ID)
+    assert list(items) == [album]

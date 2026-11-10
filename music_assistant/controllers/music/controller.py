@@ -3257,7 +3257,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         )
 
     async def _record_album_history(
-        self, album: Album | ItemMapping, timestamp: float, user_ids: list[str], queue_id: str | None
+        self,
+        album: Album | ItemMapping,
+        timestamp: float,
+        user_ids: list[str],
+        queue_id: str | None,
     ) -> None:
         """Record a track's album in recent listening without awarding a completed play."""
         for user_id in user_ids:
