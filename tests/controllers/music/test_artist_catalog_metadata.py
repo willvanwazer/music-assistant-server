@@ -19,7 +19,7 @@ from music_assistant.controllers.music.media.artists import ArtistsController
     ],
 )
 async def test_catalog_artist_uses_selected_metadata_source(
-    method: str, provider_method: str, feature: ProviderFeature
+    method: str, provider_method: str, feature: ProviderFeature, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Resolve the artist once and keep the metadata provider's cached result."""
     controller = ArtistsController.__new__(ArtistsController)
@@ -35,7 +35,7 @@ async def test_catalog_artist_uses_selected_metadata_source(
     get_artist = AsyncMock(return_value=artist)
     allowed = MagicMock(return_value=["lastfm"])
     controller.get = get_artist  # type: ignore[method-assign]
-    controller._ensure_provider_filter = allowed  # type: ignore[method-assign]
+    monkeypatch.setattr(controller, "_ensure_provider_filter", allowed)
     assert (
         await getattr(controller, method)("spotify-id", "spotify", provider_filter="lastfm") == []
     )
