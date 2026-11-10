@@ -2372,6 +2372,8 @@
   "provider.spotify.config_entries.spotify_normalization.label": "Enable Spotify's volume normalization",
   "provider.spotify.config_entries.sync_audiobook_progress.description": "Automatically sync audiobook progress from Spotify to Music Assistant. Progress from Spotify app will sync to MA when audiobooks are accessed. Only enable this if you use both the Spotify app and Music Assistant for audiobook playback.",
   "provider.spotify.config_entries.sync_audiobook_progress.label": "Sync Audiobook Progress from Spotify",
+  "provider.spotify.config_entries.sync_favorites.description": "Merge Spotify liked songs, saved albums, and followed artists with Music Assistant favorites, then mirror additions and removals every 15 minutes. Only exact Spotify mappings are used. Existing favorites are preserved on the first run.",
+  "provider.spotify.config_entries.sync_favorites.label": "Sync favorites both ways",
   "provider.spotify.config_entries.sync_podcast_progress.description": "Automatically sync episode played status from Spotify to Music Assistant. Episodes marked as played in Spotify will be marked as played in MA. Only enable this if you use both the Spotify app and Music Assistant for podcast playback.",
   "provider.spotify.config_entries.sync_podcast_progress.label": "Sync Podcast Progress from Spotify",
   "provider.spotify.config_entries.use_developer_key.label": "Use my own Spotify developer key (advanced, optional)",
