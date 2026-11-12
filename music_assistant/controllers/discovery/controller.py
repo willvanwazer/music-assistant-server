@@ -20,6 +20,7 @@ from zeroconf import (
     ServiceStateChange,
     Zeroconf,
 )
+from zeroconf._dns import DNSPointer
 from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo, AsyncZeroconf
 
 from music_assistant.constants import (
@@ -325,9 +326,15 @@ class DiscoveryController(CoreController):
         lock = self._mdns_locks.setdefault(provider.instance_id, asyncio.Lock())
         async with lock:
             for mdns_type in provider.manifest.mdns_discovery or []:
-                for mdns_name in set(self.aiozc.zeroconf.cache.cache):
-                    if mdns_type not in mdns_name or mdns_type == mdns_name:
-                        continue
+                # The browser only caches PTR records for the services it sees; SRV/TXT records
+                # exist only for services something already resolved. Replaying from the PTR
+                # targets covers services the browser announced before this provider loaded.
+                mdns_names = {
+                    record.alias
+                    for record in self.aiozc.zeroconf.cache.async_entries_with_name(mdns_type)
+                    if isinstance(record, DNSPointer)
+                }
+                for mdns_name in mdns_names:
                     info = AsyncServiceInfo(mdns_type, mdns_name)
                     if await info.async_request(self.aiozc.zeroconf, 3000):
                         await provider.on_mdns_service_state_change(

@@ -5,11 +5,26 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from zeroconf import IPVersion
+from zeroconf import IPVersion, ServiceStateChange
+from zeroconf._cache import DNSCache
+from zeroconf._dns import DNSPointer, DNSText
 from zeroconf.asyncio import AsyncZeroconf
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.mass import MusicAssistant
+
+
+class StubMdnsProvider:
+    """Minimal provider stub for mDNS discovery tests."""
+
+    def __init__(self) -> None:
+        """Initialize the provider stub."""
+        self.instance_id = "stub_mdns"
+        self.name = "Stub MDNS"
+        self.available = True
+        self.logger = MagicMock()
+        self.manifest = MagicMock(mdns_discovery=["_sonos._tcp.local."], upnp_discovery=None)
+        self.on_mdns_service_state_change = AsyncMock()
 
 
 class StubUpnpProvider:
@@ -82,6 +97,48 @@ async def test_run_provider_discovery_dispatches_upnp_callbacks(mass: MusicAssis
     assert mock_async_search.await_args.kwargs["search_target"] == "roku:ecp"
     provider.on_upnp_service_discovered.assert_awaited_once()
     mass._providers.pop(provider.instance_id, None)
+    mass.discovery.on_provider_unload(provider.instance_id)
+
+
+async def test_run_provider_discovery_replays_services_known_only_by_pointer(
+    mass: MusicAssistant,
+) -> None:
+    """Services the browser saw before the provider loaded are replayed, resolved or not."""
+    provider = StubMdnsProvider()
+    service_type = "_sonos._tcp.local."
+    resolved = f"RINCON_1@Kitchen.{service_type}"
+    unresolved = f"RINCON_2@Bathroom.{service_type}"
+    cache = DNSCache()
+    cache.async_add_records(
+        [
+            DNSPointer(service_type, 12, 1, 4500, resolved),
+            DNSPointer(service_type, 12, 1, 4500, unresolved),
+            DNSText(resolved, 16, 1, 4500, b""),
+            DNSPointer("_raop._tcp.local.", 12, 1, 4500, "AABBCCDDEEFF@Kitchen._raop._tcp.local."),
+        ]
+    )
+    mock_aiozc = MagicMock()
+    mock_aiozc.zeroconf.cache = cache
+    mock_info = MagicMock()
+    mock_info.async_request = AsyncMock(return_value=True)
+
+    with (
+        patch.object(mass.discovery, "_aiozc", mock_aiozc),
+        patch(
+            "music_assistant.controllers.discovery.controller.AsyncServiceInfo",
+            return_value=mock_info,
+        ) as mock_service_info,
+    ):
+        await mass.discovery.run_provider_discovery(provider)  # type: ignore[arg-type]
+
+    assert {call.args for call in mock_service_info.call_args_list} == {
+        (service_type, resolved),
+        (service_type, unresolved),
+    }
+    assert {call.args[:2] for call in provider.on_mdns_service_state_change.await_args_list} == {
+        (resolved, ServiceStateChange.Added),
+        (unresolved, ServiceStateChange.Added),
+    }
     mass.discovery.on_provider_unload(provider.instance_id)
 
 
