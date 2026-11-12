@@ -28,17 +28,24 @@ entries, under the same keys, that opening its page would:
 Reading the Discover rows also refreshes those rows' own caches (Made for you, recently
 played, and the other providers' rows) the way opening Discover does.
 
+## Read-through and stale data
+
+Every cached call a page makes serves an expired entry at once and refreshes it in the
+background (stale-while-revalidate), so no page waits on Spotify once its entries
+exist. That includes podcasts, podcast episodes, audiobooks and their chapters. Playback
+resume positions are the exception: an audiobook's resume position reads its chapters
+with `refresh_cache`, so it never comes from a stale entry.
+
 ## Throttling
 
-The warmer only calls Spotify for an entry that a visit would have to fetch:
-`needs_cache_fill` in `controllers/cache/helpers.py` checks the cache without calling the
-method. An entry that is missing needs filling. An expired entry needs filling only for a
-method without stale-while-revalidate (podcast episodes, for one); the other methods
-serve an expired entry immediately and refresh it when it is next opened, so the warmer
-leaves them alone. A warm cache costs a run nothing but cache reads.
+The warmer (built on `CacheWarmer` in `controllers/cache/warmer.py`) checks each entry
+with `cache_status` without calling Spotify. A run first fills the pages with a missing
+entry, the ones a visit would wait on, then refreshes pages with only expired entries,
+so the next visit shows current data. A warm, fresh cache costs a run nothing but cache
+reads.
 
 Its requests go through the provider's shared throttler, one page at a time with a
-4 second pause between pages, so browsing is never queued behind a burst. A run fills
+4 second pause between pages, so browsing is never queued behind a burst. A run fetches
 at most 200 pages; the rest wait for the next run, so a cold cache fills over a few
 runs. It defers to a running Spotify library sync, stops when Spotify asks it to back
 off, and stops after 5 consecutive failed pages.

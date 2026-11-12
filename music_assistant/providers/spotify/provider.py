@@ -54,7 +54,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from orjson import JSONDecodeError
 
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
-from music_assistant.controllers.cache import use_cache
+from music_assistant.controllers.cache import refresh_cache, use_cache
 from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.json import SerializableType, json_loads
 from music_assistant.helpers.throttle_retry import (
@@ -75,7 +75,7 @@ from .backends import (
     SpotifyPlaybackBackend,
     StreamSupersededError,
 )
-from .cache_warmer import CacheWarmer
+from .cache_warmer import SpotifyCacheWarmer
 from .constants import (
     BACKEND_SOLOIST,
     CONF_ACCOUNT_ID,
@@ -155,7 +155,7 @@ class SpotifyProvider(MusicProvider):
     throttler: ThrottlerManager
     backend: SpotifyPlaybackBackend
     _favorites_sync: FavoritesSync | None = None
-    _cache_warmer: CacheWarmer | None = None
+    _cache_warmer: SpotifyCacheWarmer | None = None
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """
@@ -265,7 +265,7 @@ class SpotifyProvider(MusicProvider):
     async def loaded_in_mass(self) -> None:
         """Start the cache warmer and optional favorites reconciler after registration."""
         await super().loaded_in_mass()
-        self._cache_warmer = CacheWarmer(self)
+        self._cache_warmer = SpotifyCacheWarmer(self)
         self._cache_warmer.start()
         self._favorites_sync = None
         if self.config.get_value(CONF_SYNC_FAVORITES, False):
@@ -612,7 +612,7 @@ class SpotifyProvider(MusicProvider):
             return UniqueList()
         return UniqueList(await self._get_recently_played())
 
-    @use_cache()
+    @use_cache(allow_expired_cache=True)
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get full podcast details by id."""
         podcast_obj = await self._get_data(f"shows/{prov_podcast_id}")
@@ -620,7 +620,7 @@ class SpotifyProvider(MusicProvider):
             raise MediaNotFoundError(f"Podcast not found: {prov_podcast_id}")
         return parse_podcast(podcast_obj, self)
 
-    @use_cache()
+    @use_cache(allow_expired_cache=True)
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
         """Get full audiobook details by id."""
         if not self.audiobooks_supported:
@@ -665,7 +665,7 @@ class SpotifyProvider(MusicProvider):
 
             yield episode
 
-    @use_cache(86400)  # 24 hours
+    @use_cache(86400, allow_expired_cache=True)  # 24 hours
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get full podcast episode details by id."""
         episode_obj = await self._get_data(f"episodes/{prov_episode_id}", market="from_token")
@@ -708,7 +708,7 @@ class SpotifyProvider(MusicProvider):
                 raise NotImplementedError("Spotify audiobook resume sync disabled in settings")
 
             try:
-                chapters_data = await self._get_audiobook_chapters_data(item_id)
+                chapters_data = await refresh_cache(self._get_audiobook_chapters_data, item_id)
                 if not chapters_data:
                     raise NotImplementedError("No chapters data available")
 
@@ -1663,7 +1663,8 @@ class SpotifyProvider(MusicProvider):
         except (MediaNotFoundError, ResourceTemporarilyUnavailable, ProviderUnavailableError) as e:
             self.logger.warning(f"Failed to get chapters for audiobook {audiobook.item_id}: {e}")
 
-    @use_cache(43200)  # 12 hours - balances freshness with performance
+    # 12 hours; serve stale + refresh in background, so new episodes show from the next visit
+    @use_cache(43200, allow_expired_cache=True)
     async def _get_podcast_episodes_data(self, prov_podcast_id: str) -> list[dict[str, Any]]:
         """
         Get raw episode data from Spotify API (cached).
@@ -1689,7 +1690,9 @@ class SpotifyProvider(MusicProvider):
 
         return episodes_data
 
-    @use_cache(7200)  # 2 hours - shorter cache for resume point data
+    # 2 hours; serve stale + refresh in background. Resume positions read it with
+    # refresh_cache, so playback never resumes from a stale position
+    @use_cache(7200, allow_expired_cache=True)
     async def _get_audiobook_chapters_data(self, prov_audiobook_id: str) -> list[dict[str, Any]]:
         """
         Get raw chapter data from Spotify API (cached).

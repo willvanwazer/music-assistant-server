@@ -14,7 +14,12 @@ from music_assistant_models.errors import MediaNotFoundError
 from music_assistant.constants import DB_TABLE_CACHE
 from music_assistant.controllers.cache import CacheController
 from music_assistant.controllers.cache.constants import BYPASS_CACHE
-from music_assistant.controllers.cache.helpers import needs_cache_fill, use_cache
+from music_assistant.controllers.cache.helpers import (
+    CacheStatus,
+    cache_status,
+    refresh_cache,
+    use_cache,
+)
 from music_assistant.mass import MusicAssistant
 
 _PROVIDER = "test_cache_helpers"
@@ -648,34 +653,49 @@ async def test_get_with_freshness(cache_controller: CacheController) -> None:
     assert data is None
 
 
-# --- needs_cache_fill ---
+# --- cache_status / refresh_cache ---
 
 
-async def test_needs_cache_fill_reads_the_cache_without_calling(provider: _FakeProvider) -> None:
-    """A missing entry needs filling, a fresh one does not, and the method is never run."""
-    assert await needs_cache_fill(provider.fetch, "a")
+async def test_cache_status_reads_the_cache_without_calling(provider: _FakeProvider) -> None:
+    """A missing entry is reported missing, a fresh one fresh, and the method never runs."""
+    assert await cache_status(provider.fetch, "a") is CacheStatus.MISSING
     await provider.fetch("a")
     assert provider.calls == 1
-    assert not await needs_cache_fill(provider.fetch, "a")
-    assert await needs_cache_fill(provider.fetch, "b")
+    assert await cache_status(provider.fetch, "a") is CacheStatus.FRESH
+    assert await cache_status(provider.fetch, "b") is CacheStatus.MISSING
     assert provider.calls == 1
 
 
-async def test_needs_cache_fill_expired_entries(
+async def test_cache_status_expired_entries(
     cache_controller: CacheController, provider: _FakeProvider
 ) -> None:
-    """An expired entry needs filling unless the method serves it while refreshing."""
+    """An expired entry is missing unless the method serves it while refreshing."""
     await cache_controller.set("fetch.a", "old", provider=_PROVIDER, expiration=-1)
     await cache_controller.set(
         "fetch_swr.a", "old", provider=_PROVIDER, expiration=-1, allow_expired_cache=True
     )
-    assert await needs_cache_fill(provider.fetch, "a")
-    assert not await needs_cache_fill(provider.fetch_swr, "a")
+    assert await cache_status(provider.fetch, "a") is CacheStatus.MISSING
+    assert await cache_status(provider.fetch_swr, "a") is CacheStatus.STALE
     assert provider.calls == 0
 
 
-async def test_needs_cache_fill_matches_the_callers_key(provider: _FakeProvider) -> None:
+async def test_cache_status_matches_the_callers_key(provider: _FakeProvider) -> None:
     """Keyword arguments are part of the key, as they are for the decorated call."""
     await provider.fetch(item_id="a")
-    assert not await needs_cache_fill(provider.fetch, item_id="a")
-    assert await needs_cache_fill(provider.fetch, "a")
+    assert await cache_status(provider.fetch, item_id="a") is CacheStatus.FRESH
+    assert await cache_status(provider.fetch, "a") is CacheStatus.MISSING
+
+
+async def test_refresh_cache_fetches_and_stores_over_a_fresh_entry(
+    provider: _FakeProvider,
+) -> None:
+    """A refresh always fetches, and later calls read what it stored."""
+    provider.result = "old"
+    await provider.fetch_swr("a")
+    provider.result = "new"
+
+    assert await refresh_cache(provider.fetch_swr, "a") == "new"
+    assert provider.calls == 2
+    assert await provider.fetch_swr("a") == "new"
+    assert provider.calls == 2
+    assert await cache_status(provider.fetch_swr, "a") is CacheStatus.FRESH

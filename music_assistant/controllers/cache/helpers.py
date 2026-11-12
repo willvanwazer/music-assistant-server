@@ -8,6 +8,7 @@ import time
 from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
+from enum import StrEnum
 from types import MethodType
 from typing import (
     TYPE_CHECKING,
@@ -94,6 +95,16 @@ def use_cache(
             # fallback: reconstruct using the (memoized) return-type annotation
             return cast("R", parse_value(func.__name__, cachedata, _resolve_return_hint(func)))
 
+        _refresh = _refresher(
+            func,
+            cache_none,
+            expiration=expiration,
+            category=category,
+            checksum=cache_checksum,
+            persistent=persistent,
+            allow_expired_cache=allow_expired_cache,
+        )
+
         @functools.wraps(func)
         async def wrapper(self: ProviderT, *args: P.args, **kwargs: P.kwargs) -> R:
             cache = self.mass.cache
@@ -149,9 +160,7 @@ def use_cache(
                             )
                         )[1]:
                             return
-                        result = await func(self, *args, **kwargs)
-                        if cache_none or result is not None:
-                            await _store_task(result)
+                        await _refresh(self, *args, **kwargs)
                     except Exception:
                         LOGGER.exception(
                             "Background cache refresh failed for %s/%s",
@@ -239,41 +248,78 @@ def use_cache(
         setattr(
             wrapper,
             _OPTIONS_ATTR,
-            _CacheOptions(category=category, allow_expired_cache=allow_expired_cache),
+            _CacheOptions(
+                category=category, allow_expired_cache=allow_expired_cache, refresh=_refresh
+            ),
         )
         return wrapper
 
     return _decorator
 
 
-async def needs_cache_fill(
-    method: Callable[..., Awaitable[Any]], *args: Any, **kwargs: Any
-) -> bool:
-    """
-    Return whether calling a @use_cache method with these arguments would fetch its data.
+class CacheStatus(StrEnum):
+    """State of the cache entry a @use_cache call would read."""
 
-    The cache is only inspected, the method is not called. An expired entry counts as
-    filled for a method that serves stale data while it refreshes (allow_expired_cache),
-    since a caller gets that entry without waiting on the fetch.
+    # no entry, or an expired one the method will not serve: a caller waits on the fetch
+    MISSING = "missing"
+    # an expired entry the method serves at once while it refreshes in the background
+    STALE = "stale"
+    FRESH = "fresh"
+
+
+async def cache_status(
+    method: Callable[..., Awaitable[Any]], *args: Any, **kwargs: Any
+) -> CacheStatus:
+    """
+    Return the state of the cache entry that calling a @use_cache method would read.
+
+    The cache is only inspected, the method is not called.
 
     :param method: The bound @use_cache method, e.g. provider.get_artist.
     :param args: The positional arguments the method would be called with.
     :param kwargs: The keyword arguments the method would be called with, passed the same
-        way (positionally or by keyword) as the callers whose cache entry should be filled.
+        way (positionally or by keyword) as the callers whose cache entry is meant.
     """
-    if not isinstance(method, MethodType):
-        raise TypeError(f"{method!r} is not a bound method")
-    owner = cast("_Cacheable", method.__self__)
-    func = method.__func__
-    options = cast("_CacheOptions", getattr(func, _OPTIONS_ATTR))
+    owner, func, options = _cached_method(method)
     expires = await owner.mass.cache.get_expiration(
         _cache_key(func.__name__, args, kwargs),
         provider=getattr(owner, "instance_id", owner.domain),
         category=options.category,
     )
     if expires is None:
-        return True
-    return expires < time.time() and not options.allow_expired_cache
+        return CacheStatus.MISSING
+    if expires >= time.time():
+        return CacheStatus.FRESH
+    return CacheStatus.STALE if options.allow_expired_cache else CacheStatus.MISSING
+
+
+async def refresh_cache(method: Callable[..., Awaitable[R]], *args: Any, **kwargs: Any) -> R:
+    """
+    Fetch the data of a @use_cache call and store it, whatever the cache holds.
+
+    Nested cached calls are read through the cache as usual. This is the refresh that a
+    stale-while-revalidate read starts in the background, awaited.
+
+    :param method: The bound @use_cache method, e.g. provider.get_artist.
+    :param args: The positional arguments to call the method with.
+    :param kwargs: The keyword arguments to call the method with.
+    """
+    owner, _func, options = _cached_method(method)
+    return cast("R", await options.refresh(owner, *args, **kwargs))
+
+
+def _cached_method(
+    method: Callable[..., Awaitable[Any]],
+) -> tuple[_Cacheable, Callable[..., Any], _CacheOptions]:
+    """Return the owner, function and cache options of a bound @use_cache method."""
+    if not isinstance(method, MethodType):
+        raise TypeError(f"{method!r} is not a bound method")
+    func = method.__func__
+    return (
+        cast("_Cacheable", method.__self__),
+        func,
+        cast("_CacheOptions", getattr(func, _OPTIONS_ATTR)),
+    )
 
 
 _OPTIONS_ATTR = "_use_cache_options"
@@ -281,10 +327,38 @@ _OPTIONS_ATTR = "_use_cache_options"
 
 @dataclass(frozen=True, slots=True)
 class _CacheOptions:
-    """Options a @use_cache method was decorated with, read by needs_cache_fill."""
+    """Options a @use_cache method was decorated with, read by cache_status and refresh_cache."""
 
     category: int
     allow_expired_cache: bool
+    refresh: Callable[..., Awaitable[Any]]
+
+
+def _refresher[OwnerT: _Cacheable, **ArgsP, ResultT](
+    func: Callable[Concatenate[OwnerT, ArgsP], Awaitable[ResultT]],
+    cache_none: bool,
+    **cache_options: Any,
+) -> Callable[Concatenate[OwnerT, ArgsP], Coroutine[Any, Any, ResultT]]:
+    """
+    Return a function that runs func and stores its result under the call's cache key.
+
+    :param func: The function decorated with @use_cache.
+    :param cache_none: Whether a None result is stored.
+    :param cache_options: The cache.set options the decorator stores entries with.
+    """
+
+    async def _refresh(owner: OwnerT, *args: ArgsP.args, **kwargs: ArgsP.kwargs) -> ResultT:
+        result = await func(owner, *args, **kwargs)
+        if cache_none or result is not None:
+            await owner.mass.cache.set(
+                key=_cache_key(func.__name__, args, kwargs),
+                data=cast("SerializableType", result),
+                provider=getattr(owner, "instance_id", owner.domain),
+                **cache_options,
+            )
+        return result
+
+    return _refresh
 
 
 def _cache_key(func_name: str, args: tuple[Any, ...], kwargs: Mapping[str, Any]) -> str:

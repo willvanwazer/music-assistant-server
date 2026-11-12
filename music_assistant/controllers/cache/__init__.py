@@ -10,14 +10,19 @@ from .constants import (
     MAX_CACHE_DB_SIZE_MB,
 )
 from .controller import CacheController
-from .helpers import needs_cache_fill, use_cache
+from .helpers import CacheStatus, cache_status, refresh_cache, use_cache
+from .warmer import CacheCall, CacheWarmer
 
 __all__ = [
     "BYPASS_CACHE",
     "DEFAULT_CACHE_EXPIRATION",
     "MAX_CACHE_DB_SIZE_MB",
+    "CacheCall",
     "CacheController",
+    "CacheStatus",
+    "CacheWarmer",
     "SerializableType",
-    "needs_cache_fill",
+    "cache_status",
+    "refresh_cache",
     "use_cache",
 ]

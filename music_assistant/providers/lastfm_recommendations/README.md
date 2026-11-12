@@ -27,3 +27,26 @@ hours. The existing scheduled refresh and **Refresh Recommendations** action reb
 the rows. Failed or private-profile responses are not cached as empty listening
 history and do not silently switch the recommendation source. Existing rows stay
 visible while a replacement is built; on failure the previous generation is retained.
+
+# Artist page cache warming
+
+Artist pages show Last.fm's top tracks and similar artists for the artist. Both are
+read through the cache and serve an expired entry at once while it refreshes, but the
+first visit used to wait on Last.fm and on resolving every item to a playable catalog
+item. `cache_warmer.py` (built on `CacheWarmer` in `controllers/cache/warmer.py`) fills
+them in the background, as **Keep Last.fm artist panels cached (every 6 hours)**,
+starting 5 minutes after the provider loads. An administrator can start a run with
+`lastfm_recommendations/<provider-instance>/warm_cache`.
+
+It covers the artists on every Discover row first, then every library artist, favorites
+first. Each artist is looked up the way its page does (the library's copy when there is
+one), so the entries carry the same keys: `_get_artist_toptracks` at the default limit
+of 25 and `_get_similar_artists` at the apps' limit of 25. Missing entries are filled
+first, then expired ones refreshed.
+
+Resolving an item searches the streaming providers through their throttles, so a run
+fetches at most 100 artists, one at a time with a 4 second pause. It waits while a
+library sync runs, while a music provider is loading, or while no streaming provider
+can be searched, since a panel resolved then would be cached without those items. It
+stops when Last.fm asks it to back off. Last.fm's similar tracks are not warmed: track
+pages ask the track's own provider first and fall back to Last.fm only when it has none.

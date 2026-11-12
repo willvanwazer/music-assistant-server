@@ -24,6 +24,7 @@ from music_assistant.constants import CONF_USERNAME
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.metadata_provider import MetadataProvider
 from music_assistant.providers.lastfm_recommendations.api_client import LastFMAPIClient
+from music_assistant.providers.lastfm_recommendations.cache_warmer import LastFMCacheWarmer
 from music_assistant.providers.lastfm_recommendations.constants import (
     CACHE_CATEGORY_RESOLVED_ITEMS,
     CACHE_EXPIRATION_SECONDS,
@@ -75,6 +76,8 @@ async def setup(
 
 class LastFMRecommendationsProvider(MetadataProvider):
     """Last.fm Recommendations Provider for Music Assistant."""
+
+    _cache_warmer: LastFMCacheWarmer | None = None
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
@@ -179,8 +182,16 @@ class LastFMRecommendationsProvider(MetadataProvider):
             task_id=f"{REFRESH_TASK_ID}_initial_{self.instance_id}",
         )
 
+    async def loaded_in_mass(self) -> None:
+        """Start keeping the artist pages' Last.fm panels cached after registration."""
+        await super().loaded_in_mass()
+        self._cache_warmer = LastFMCacheWarmer(self)
+        self._cache_warmer.start()
+
     async def unload(self, is_removed: bool = False) -> None:
         """Unload the provider."""
+        if warmer := getattr(self, "_cache_warmer", None):
+            await warmer.stop()
         self.mass.tasks.unregister_scheduled_task(
             f"{REFRESH_TASK_ID}_{self.instance_id}",
             clear_persisted_state=is_removed,

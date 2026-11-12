@@ -18,8 +18,7 @@ from music_assistant_models.media_items import (
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.mass import MusicAssistant
-from music_assistant.providers.spotify import cache_warmer
-from music_assistant.providers.spotify.cache_warmer import CacheWarmer
+from music_assistant.providers.spotify.cache_warmer import SpotifyCacheWarmer
 from music_assistant.providers.spotify.provider import SpotifyProvider
 
 INSTANCE = "spotify--warmer-test"
@@ -40,6 +39,14 @@ class _Pages:
     @use_cache(3600)
     async def page(self, item_id: str) -> str:
         """Fetch one page."""
+        return self._fetch(item_id)
+
+    @use_cache(3600, allow_expired_cache=True)
+    async def page_swr(self, item_id: str) -> str:
+        """Fetch one page that is served stale while it refreshes."""
+        return self._fetch(item_id)
+
+    def _fetch(self, item_id: str) -> str:
         self.attempts.append(item_id)
         if self.error is not None:
             raise self.error
@@ -70,25 +77,28 @@ def pages(mass_minimal: MusicAssistant) -> _Pages:
 @pytest.fixture
 def warmer(
     provider: SpotifyProvider, pages: _Pages, monkeypatch: pytest.MonkeyPatch
-) -> CacheWarmer:
+) -> SpotifyCacheWarmer:
     """Return a warmer whose pages each make one stand-in cached call."""
-    monkeypatch.setattr(cache_warmer, "PAGE_PAUSE", 0)
-    warmer = CacheWarmer(provider)
-    monkeypatch.setattr(warmer, "_syncing", lambda: False)
-    monkeypatch.setattr(
-        warmer, "_page_calls", lambda _media_type, item_id: [(pages.page, (item_id,), {})]
-    )
+    warmer = SpotifyCacheWarmer(provider)
+    monkeypatch.setattr(warmer, "page_pause", 0)
+    monkeypatch.setattr(warmer, "_paused", AsyncMock(return_value=False))
+
+    async def page_calls(target: tuple[MediaType, str]) -> list[Any]:
+        method = pages.page_swr if target[1].startswith("swr") else pages.page
+        return [(method, (target[1],), {})]
+
+    monkeypatch.setattr(warmer, "_page_calls", page_calls)
     return warmer
 
 
-def _targets(warmer: CacheWarmer, monkeypatch: pytest.MonkeyPatch, *ids: str) -> None:
+def _targets(warmer: SpotifyCacheWarmer, monkeypatch: pytest.MonkeyPatch, *ids: str) -> None:
     monkeypatch.setattr(
         warmer, "_targets", AsyncMock(return_value=[(MediaType.ARTIST, i) for i in ids])
     )
 
 
 async def test_run_fills_only_pages_not_cached(
-    warmer: CacheWarmer, pages: _Pages, monkeypatch: pytest.MonkeyPatch
+    warmer: SpotifyCacheWarmer, pages: _Pages, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A page already in the cache is skipped without calling Spotify."""
     await pages.page("cached")
@@ -98,17 +108,17 @@ async def test_run_fills_only_pages_not_cached(
     counts = await warmer.run()
 
     assert pages.fetched == ["new"]
-    assert counts == {"pages": 2, "filled": 1, "failed": 0, "deferred": 0}
+    assert counts == {"pages": 2, "filled": 1, "refreshed": 0, "failed": 0, "deferred": 0}
     # the next run finds everything cached
     assert (await warmer.run())["filled"] == 0
     assert pages.fetched == ["new"]
 
 
 async def test_run_stops_filling_at_the_page_budget(
-    warmer: CacheWarmer, pages: _Pages, monkeypatch: pytest.MonkeyPatch
+    warmer: SpotifyCacheWarmer, pages: _Pages, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Pages beyond the per-run budget wait for the next run."""
-    monkeypatch.setattr(cache_warmer, "PAGES_PER_RUN", 2)
+    monkeypatch.setattr(warmer, "pages_per_run", 2)
     _targets(warmer, monkeypatch, "a", "b", "c")
 
     counts = await warmer.run()
@@ -117,8 +127,45 @@ async def test_run_stops_filling_at_the_page_budget(
     assert counts["deferred"] == 1
 
 
+async def test_run_refreshes_stale_pages_after_missing_ones(
+    warmer: SpotifyCacheWarmer,
+    pages: _Pages,
+    provider: SpotifyProvider,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Expired entries that are served stale are refreshed, after the pages that wait."""
+    await provider.mass.cache.set(
+        "page_swr.swr-old",
+        "stale",
+        provider=INSTANCE,
+        expiration=-1,
+        allow_expired_cache=True,
+    )
+    await pages.page_swr("swr-fresh")
+    pages.fetched.clear()
+    _targets(warmer, monkeypatch, "swr-old", "swr-fresh", "new")
+
+    counts = await warmer.run()
+
+    assert pages.fetched == ["new", "swr-old"]
+    assert counts == {"pages": 3, "filled": 1, "refreshed": 1, "failed": 0, "deferred": 0}
+    assert await pages.page_swr("swr-old") == "swr-old"
+
+
+async def test_a_call_shared_by_pages_is_fetched_once(
+    warmer: SpotifyCacheWarmer, pages: _Pages, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two pages making the same cached call cost one fetch."""
+    _targets(warmer, monkeypatch, "a", "a")
+
+    counts = await warmer.run()
+
+    assert pages.attempts == ["a"]
+    assert counts["filled"] == 1
+
+
 async def test_rate_limit_ends_the_run(
-    warmer: CacheWarmer, pages: _Pages, monkeypatch: pytest.MonkeyPatch
+    warmer: SpotifyCacheWarmer, pages: _Pages, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """When Spotify asks to back off, no further page is requested."""
     pages.error = RetriesExhausted("Not retrying, asked to wait 600 seconds")
@@ -131,7 +178,7 @@ async def test_rate_limit_ends_the_run(
 
 
 async def test_repeated_failures_end_the_run(
-    warmer: CacheWarmer, pages: _Pages, monkeypatch: pytest.MonkeyPatch
+    warmer: SpotifyCacheWarmer, pages: _Pages, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A run that keeps failing stops rather than walking the whole list."""
     pages.error = MediaNotFoundError("gone")
@@ -139,12 +186,12 @@ async def test_repeated_failures_end_the_run(
 
     counts = await warmer.run()
 
-    assert counts["failed"] == cache_warmer.MAX_CONSECUTIVE_FAILURES
-    assert len(pages.attempts) == cache_warmer.MAX_CONSECUTIVE_FAILURES
+    assert counts["failed"] == warmer.max_consecutive_failures
+    assert len(pages.attempts) == warmer.max_consecutive_failures
 
 
 async def test_unavailable_provider_is_not_filled(
-    warmer: CacheWarmer, provider: SpotifyProvider
+    warmer: SpotifyCacheWarmer, provider: SpotifyProvider
 ) -> None:
     """Nothing is fetched while Spotify is unavailable."""
     provider.available = False
@@ -189,7 +236,7 @@ async def test_targets_put_discover_first_and_skip_other_providers(
     )
     music = SimpleNamespace(recommendations=recommendations, database=database)
     monkeypatch.setattr(provider.mass, "music", music, raising=False)
-    warmer = CacheWarmer(provider)
+    warmer = SpotifyCacheWarmer(provider)
 
     targets: list[tuple[MediaType, Any]] = await warmer._targets()
 
@@ -216,7 +263,7 @@ async def test_every_page_call_is_a_cached_method(
     provider: SpotifyProvider, media_type: MediaType
 ) -> None:
     """Each page is warmed through cached methods only, so a fill is a cache check first."""
-    calls = CacheWarmer(provider)._page_calls(media_type, "id1")
+    calls = await SpotifyCacheWarmer(provider)._page_calls((media_type, "id1"))
 
     assert calls
     for method, _args, _kwargs in calls:
