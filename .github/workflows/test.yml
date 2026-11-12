@@ -48,23 +48,41 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref || github.ref }}
-      # On PRs, run only the tests affected by the changed files: a PR touching a
-      # single provider runs just that provider's tests. A change to shared code
-      # (incl. translations under music_assistant/), dependencies or the CI itself
-      # runs the full suite, as do pushes, merge groups, manual runs and
-      # reusable-workflow calls.
-      # PRs that only touch docs or other non-code files run nothing.
+      # On PRs and on pushes to this fork's main (which the NAS deploys), run only
+      # the tests affected by the changed files: a change to a single provider runs
+      # just that provider's tests. A change to shared code (incl. translations under
+      # music_assistant/, unless generated from a changed provider's strings),
+      # dependencies or the CI itself runs the full suite, as do other pushes, merge
+      # groups, manual runs, new branches and pushes too large or rewritten to compare.
+      # Changes that only touch docs or other non-code files run nothing.
       - name: Determine test scope
         id: scope
         env:
           GH_TOKEN: ${{ github.token }}
+          BEFORE: ${{ github.event.before }}
         run: |
-          if [ "${{ github.event_name }}" != "pull_request" ]; then
+          full() {
             {
               echo "mode=full"
               echo "test_paths="
               echo "cov_paths="
             } >> "$GITHUB_OUTPUT"
+          }
+          if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+              full
+              exit 0
+            fi
+            if ! files=$(gh api "repos/${{ github.repository }}/compare/${BEFORE}...${{ github.sha }}" \
+              --jq 'if (.files | length) >= 300 then error("too many files") else .files[] | .filename, (.previous_filename // empty) end'); then
+              full
+              exit 0
+            fi
+            printf '%s\n' "$files" | python3 scripts/ci_test_scope.py
+            exit 0
+          fi
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            full
             exit 0
           fi
           # Emit both the new and (for renames) the previous path so a file moved

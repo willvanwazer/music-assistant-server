@@ -27,8 +27,33 @@ def test_provider_name() -> None:
 
 
 def test_cov_source() -> None:
-    """cov_source maps a provider test dir to its coverage package."""
+    """cov_source maps a test dir to its coverage package."""
     assert cov_source("tests/providers/plex") == "music_assistant.providers.plex"
+    assert cov_source("tests/controllers/translations") == (
+        "music_assistant.controllers.translations"
+    )
+
+
+def test_provider_strings_with_generated_translations(repo: Path) -> None:
+    """A provider's strings and the translations generated from them run both test dirs."""
+    assert decide(
+        [
+            "music_assistant/providers/spotify/strings.json",
+            "music_assistant/translations/en.json",
+        ],
+        repo,
+    ) == ("partial", ["tests/providers/spotify", "tests/controllers/translations"])
+
+
+def test_translations_without_provider_strings_force_full(repo: Path) -> None:
+    """Translations changed alongside provider code, but not its strings, run everything."""
+    assert decide(
+        [
+            "music_assistant/providers/spotify/provider.py",
+            "music_assistant/translations/en.json",
+        ],
+        repo,
+    ) == ("full", [])
 
 
 def test_single_provider(repo: Path) -> None:

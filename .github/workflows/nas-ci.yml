@@ -14,8 +14,9 @@ concurrency:
 jobs:
   checks:
     uses: ./.github/workflows/test.yml
+  # Builds alongside the tests rather than after them: a deployment needs the whole
+  # run to succeed, so the image is still only deployed once the tests pass.
   image:
-    needs: checks
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:

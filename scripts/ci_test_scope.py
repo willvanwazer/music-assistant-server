@@ -49,9 +49,22 @@ def target_for_provider(name: str, repo_root: Path) -> str | None:
     return None
 
 
+# The source translations are generated from each provider's strings.json, so a change to
+# them alongside a provider's strings is that provider's change plus the translation tests.
+TRANSLATIONS_DIR = "music_assistant/translations/"
+TRANSLATIONS_TESTS = "tests/controllers/translations"
+
+
 def cov_source(test_path: str) -> str:
-    """Map a provider test dir (``tests/providers/<X>``) to its coverage package."""
-    return f"music_assistant.providers.{test_path.rsplit('/', 1)[-1]}"
+    """Map a test dir (``tests/providers/<X>``) to its coverage package."""
+    return "music_assistant." + test_path.removeprefix("tests/").replace("/", ".")
+
+
+def provider_strings_changed(changed: list[str]) -> bool:
+    """Return whether any changed path is a provider's translatable strings."""
+    return any(
+        provider_name(path) is not None and path.endswith("/strings.json") for path in changed
+    )
 
 
 def decide(changed: list[str], repo_root: Path) -> tuple[str, list[str]]:
@@ -62,10 +75,13 @@ def decide(changed: list[str], repo_root: Path) -> tuple[str, list[str]]:
     :param repo_root: Repository root, used to resolve a provider's tests.
     """
     providers: set[str] = set()
+    translations = False
     for path in changed:
         provider = provider_name(path)
         if provider is not None:
             providers.add(provider)
+        elif path.startswith(TRANSLATIONS_DIR) and provider_strings_changed(changed):
+            translations = True
         elif path in FULL_TRIGGER_FILES or path.startswith(("music_assistant/", "tests/")):
             # Shared/core code changed -> the change can reach anything.
             return "full", []
@@ -81,6 +97,8 @@ def decide(changed: list[str], repo_root: Path) -> tuple[str, list[str]]:
         if target is None:
             return "full", []
         paths.append(target)
+    if translations:
+        paths.append(TRANSLATIONS_TESTS)
     return "partial", paths
 
 
