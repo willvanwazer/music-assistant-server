@@ -1,4 +1,4 @@
-"""Unit tests for the Spotify provider's recently played recommendation row."""
+"""Unit tests for the Spotify provider's recommendation rows."""
 
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -10,6 +10,10 @@ from music_assistant_models.media_items import Album, Playlist
 
 from music_assistant.providers.spotify.parsers import recently_played_sources
 from music_assistant.providers.spotify.provider import (
+    DISCOVER_CATEGORY_ID,
+    DJ_PLAYLIST_ID,
+    MADE_FOR_YOU_CATEGORY_ID,
+    MADE_FOR_YOU_ROW_ID,
     RECENTLY_PLAYED_ROW_ID,
     SpotifyProvider,
 )
@@ -90,17 +94,75 @@ def provider() -> SpotifyProvider:
     mass.music.get_controller.return_value.get_library_item_by_prov_id = AsyncMock(
         return_value=None
     )
+    mass.music.playlists.get_library_item_by_prov_id = AsyncMock(return_value=None)
+    mass.metadata.locale = "en_US"
     use_real_create_task(mass)
     prov.mass = mass
     return prov
 
 
 @pytest.mark.asyncio
-async def test_rows_list_recently_played(provider: SpotifyProvider) -> None:
-    """The provider offers one recently played row."""
+async def test_rows_list_made_for_you_and_recently_played(provider: SpotifyProvider) -> None:
+    """The provider offers a made for you row and a recently played row, without items."""
     rows = await provider.get_recommendations()
-    assert [row.item_id for row in rows] == [RECENTLY_PLAYED_ROW_ID]
-    assert rows[0].items == []
+    assert [row.item_id for row in rows] == [MADE_FOR_YOU_ROW_ID, RECENTLY_PLAYED_ROW_ID]
+    assert all(row.items == [] for row in rows)
+
+
+def _playlist(playlist_id: str) -> dict[str, Any]:
+    return {
+        "id": playlist_id,
+        "name": f"Playlist {playlist_id}",
+        "owner": {"id": "spotify", "display_name": "Spotify"},
+        "collaborative": False,
+        "external_urls": {"spotify": f"https://open.spotify.com/playlist/{playlist_id}"},
+        "images": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_made_for_you_puts_discover_first_and_skips_the_dj(
+    provider: SpotifyProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Discover Weekly and Release Radar lead; the DJ and repeats are left out."""
+    categories = {
+        DISCOVER_CATEGORY_ID: ["weekly", "radar"],
+        MADE_FOR_YOU_CATEGORY_ID: [DJ_PLAYLIST_ID, "daylist", "radar", "on_repeat"],
+    }
+
+    async def get_data(endpoint: str, **_kwargs: Any) -> dict[str, Any]:
+        category_id = endpoint.split("/")[2]
+        return {"playlists": {"items": [_playlist(i) for i in categories[category_id]]}}
+
+    monkeypatch.setattr(provider, "_get_data", get_data)
+    provider._sp_user = None
+
+    items = await provider.get_recommendation_items(MADE_FOR_YOU_ROW_ID)
+
+    assert [item.item_id for item in items] == ["weekly", "radar", "daylist", "on_repeat"]
+
+
+@pytest.mark.asyncio
+async def test_made_for_you_shows_a_followed_playlist_from_the_library(
+    provider: SpotifyProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A made for you playlist the user follows is the library item."""
+    monkeypatch.setattr(
+        provider,
+        "_get_data",
+        AsyncMock(return_value={"playlists": {"items": [_playlist("weekly")]}}),
+    )
+    provider._sp_user = None
+    library_playlist = MagicMock(spec=Playlist, item_id="42")
+    monkeypatch.setattr(
+        provider.mass.music.playlists,
+        "get_library_item_by_prov_id",
+        AsyncMock(return_value=library_playlist),
+    )
+
+    items = await provider.get_recommendation_items(MADE_FOR_YOU_ROW_ID)
+
+    assert list(items) == [library_playlist]
 
 
 @pytest.mark.asyncio

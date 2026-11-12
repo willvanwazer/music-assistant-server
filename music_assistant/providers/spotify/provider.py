@@ -127,6 +127,17 @@ RECENTLY_PLAYED_ROW_ID = "recently_played"
 RECENTLY_PLAYED_LIMIT = 20
 RECENTLY_PLAYED_CACHE_SECONDS = 60
 
+# recommendation row with the playlists Spotify makes for the account: Discover Weekly,
+# Release Radar, daylist, On Repeat and the artist, genre and mood mixes
+MADE_FOR_YOU_ROW_ID = "made_for_you"
+MADE_FOR_YOU_LIMIT = 30
+# the browse categories that hold them: "Discover" has Discover Weekly and Release Radar,
+# "Made For You" the rest
+DISCOVER_CATEGORY_ID = "0JQ5DAtOnAEpjOgUKwXyxj"
+MADE_FOR_YOU_CATEGORY_ID = "0JQ5DAt0tbjZptfcdMSKl3"
+# the DJ is a live feature of the Spotify app rather than a playlist that plays here
+DJ_PLAYLIST_ID = "37i9dQZF1EYkqdzj48dyYq"
+
 
 class SpotifyProvider(MusicProvider):
     """Implementation of a Spotify MusicProvider."""
@@ -566,12 +577,19 @@ class SpotifyProvider(MusicProvider):
         """Get this provider's recommendation rows, without items."""
         return [
             RecommendationFolder(
+                item_id=MADE_FOR_YOU_ROW_ID,
+                provider=self.instance_id,
+                name="Made for you",
+                translation_key="made_for_you",
+                icon="mdi-account-heart-outline",
+            ),
+            RecommendationFolder(
                 item_id=RECENTLY_PLAYED_ROW_ID,
                 provider=self.instance_id,
                 name="Recently played on Spotify",
                 translation_key="recently_played",
                 icon="mdi-history",
-            )
+            ),
         ]
 
     async def get_recommendation_items(
@@ -582,6 +600,8 @@ class SpotifyProvider(MusicProvider):
 
         :param item_id: The item_id of the row, as returned by get_recommendations.
         """
+        if item_id == MADE_FOR_YOU_ROW_ID:
+            return UniqueList(await self._get_made_for_you())
         if item_id != RECENTLY_PLAYED_ROW_ID:
             return UniqueList()
         return UniqueList(await self._get_recently_played())
@@ -1258,6 +1278,28 @@ class SpotifyProvider(MusicProvider):
 
         resolved = await asyncio.gather(*(resolve(*source) for source in sources))
         return [item for item in resolved if item is not None]
+
+    async def _get_made_for_you(self) -> list[Playlist]:
+        """Get the playlists Spotify makes for the account, Discover Weekly and Release Radar first."""
+        locale = self.mass.metadata.locale
+        discover, made_for_you = await asyncio.gather(
+            self._get_category_playlists(DISCOVER_CATEGORY_ID, locale),
+            self._get_category_playlists(MADE_FOR_YOU_CATEGORY_ID, locale),
+        )
+        seen: set[str] = set()
+        playlists: list[Playlist] = []
+        for playlist in (*discover, *made_for_you):
+            if playlist.item_id == DJ_PLAYLIST_ID or playlist.item_id in seen:
+                continue
+            seen.add(playlist.item_id)
+            # one the user follows shows as their library playlist
+            library_item = await self.mass.music.playlists.get_library_item_by_prov_id(
+                playlist.item_id, self.instance_id
+            )
+            playlists.append(library_item or playlist)
+            if len(playlists) == MADE_FOR_YOU_LIMIT:
+                break
+        return playlists
 
     @use_cache(
         RECENTLY_PLAYED_CACHE_SECONDS,

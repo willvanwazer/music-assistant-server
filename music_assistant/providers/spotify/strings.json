@@ -172,5 +172,10 @@
   },
   "manifest": {
     "description": "Stream music, playlists, podcasts, and discover new songs via Spotify’s ecosystem."
+  },
+  "recommendations": {
+    "made_for_you": {
+      "name": "Made for you"
+    }
   }
 }
