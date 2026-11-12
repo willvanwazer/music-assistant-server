@@ -22,6 +22,10 @@ parsing, StreamDetails and the audiobook chapter logic, and hands canonical
 `spotify:<type>:<id>` URIs to the backend behind the `SpotifyPlaybackBackend` contract
 (`backends/base.py`).
 
+Two background jobs run beside it: the opt-in favorites sync (`FAVORITES.md`) and the
+cache warmer (`CACHE_WARMING.md`), which fills the cache behind Discover and library
+pages before anyone opens them.
+
 ## Soloist specifics
 
 The heavy lifting (managed binary install with 90-day build expiry, WebSocket client,

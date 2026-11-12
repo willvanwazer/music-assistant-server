@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import functools
-from collections.abc import Awaitable, Callable, Coroutine
+import time
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
+from types import MethodType
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -97,11 +99,7 @@ def use_cache(
             cache = self.mass.cache
             provider_id = getattr(self, "instance_id", self.domain)
 
-            # create a cache key dynamically based on the (remaining) args/kwargs
-            cache_key_parts = [func.__name__, *args]
-            for key in sorted(kwargs.keys()):
-                cache_key_parts.append(f"{key}{kwargs[key]}")
-            cache_key = ".".join(map(str, cache_key_parts))
+            cache_key = _cache_key(func.__name__, args, kwargs)
 
             # single lookup that returns the entry, its freshness and whether it was found;
             # found distinguishes a stored None (a negative hit) from a cache miss. expired
@@ -238,9 +236,63 @@ def use_cache(
                 )
                 return cast("R", outcome.result)
 
+        setattr(
+            wrapper,
+            _OPTIONS_ATTR,
+            _CacheOptions(category=category, allow_expired_cache=allow_expired_cache),
+        )
         return wrapper
 
     return _decorator
+
+
+async def needs_cache_fill(
+    method: Callable[..., Awaitable[Any]], *args: Any, **kwargs: Any
+) -> bool:
+    """
+    Return whether calling a @use_cache method with these arguments would fetch its data.
+
+    The cache is only inspected, the method is not called. An expired entry counts as
+    filled for a method that serves stale data while it refreshes (allow_expired_cache),
+    since a caller gets that entry without waiting on the fetch.
+
+    :param method: The bound @use_cache method, e.g. provider.get_artist.
+    :param args: The positional arguments the method would be called with.
+    :param kwargs: The keyword arguments the method would be called with, passed the same
+        way (positionally or by keyword) as the callers whose cache entry should be filled.
+    """
+    if not isinstance(method, MethodType):
+        raise TypeError(f"{method!r} is not a bound method")
+    owner = cast("_Cacheable", method.__self__)
+    func = method.__func__
+    options = cast("_CacheOptions", getattr(func, _OPTIONS_ATTR))
+    expires = await owner.mass.cache.get_expiration(
+        _cache_key(func.__name__, args, kwargs),
+        provider=getattr(owner, "instance_id", owner.domain),
+        category=options.category,
+    )
+    if expires is None:
+        return True
+    return expires < time.time() and not options.allow_expired_cache
+
+
+_OPTIONS_ATTR = "_use_cache_options"
+
+
+@dataclass(frozen=True, slots=True)
+class _CacheOptions:
+    """Options a @use_cache method was decorated with, read by needs_cache_fill."""
+
+    category: int
+    allow_expired_cache: bool
+
+
+def _cache_key(func_name: str, args: tuple[Any, ...], kwargs: Mapping[str, Any]) -> str:
+    """Return the cache key of a call, built from the method name and its arguments."""
+    cache_key_parts = [func_name, *args]
+    for key in sorted(kwargs.keys()):
+        cache_key_parts.append(f"{key}{kwargs[key]}")
+    return ".".join(map(str, cache_key_parts))
 
 
 @dataclass(slots=True)

@@ -75,6 +75,7 @@ from .backends import (
     SpotifyPlaybackBackend,
     StreamSupersededError,
 )
+from .cache_warmer import CacheWarmer
 from .constants import (
     BACKEND_SOLOIST,
     CONF_ACCOUNT_ID,
@@ -154,6 +155,7 @@ class SpotifyProvider(MusicProvider):
     throttler: ThrottlerManager
     backend: SpotifyPlaybackBackend
     _favorites_sync: FavoritesSync | None = None
+    _cache_warmer: CacheWarmer | None = None
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """
@@ -261,8 +263,10 @@ class SpotifyProvider(MusicProvider):
             raise
 
     async def loaded_in_mass(self) -> None:
-        """Start the optional favorites reconciler after provider registration."""
+        """Start the cache warmer and optional favorites reconciler after registration."""
         await super().loaded_in_mass()
+        self._cache_warmer = CacheWarmer(self)
+        self._cache_warmer.start()
         self._favorites_sync = None
         if self.config.get_value(CONF_SYNC_FAVORITES, False):
             self._favorites_sync = FavoritesSync(self)
@@ -270,6 +274,8 @@ class SpotifyProvider(MusicProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle close/cleanup of the provider."""
+        if warmer := getattr(self, "_cache_warmer", None):
+            await warmer.stop()
         if sync := getattr(self, "_favorites_sync", None):
             await sync.stop()
         try:

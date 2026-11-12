@@ -129,6 +129,21 @@ async def test_cleanup_filesystem_provider_does_not_reset_database(mass: MusicAs
     assert await artists.get_library_item(int(db_survivor.item_id))
 
 
+async def test_cleanup_provider_keeps_other_providers_cache(mass: MusicAssistant) -> None:
+    """Removing a provider drops its own cache entries and keeps every other provider's."""
+    await mass.cache.set("get_artist.fs", {"name": "gone"}, provider=FS_INSTANCE)
+    await mass.cache.set(
+        "state.fs", {"name": "gone too"}, provider=FS_INSTANCE, category=3, persistent=True
+    )
+    await mass.cache.set("get_artist.sp", {"name": "kept"}, provider=STREAM_INSTANCE)
+
+    await mass.music.cleanup_provider(FS_INSTANCE)
+
+    assert await mass.cache.get("get_artist.fs", provider=FS_INSTANCE) is None
+    assert await mass.cache.get("state.fs", provider=FS_INSTANCE, category=3) is None
+    assert await mass.cache.get("get_artist.sp", provider=STREAM_INSTANCE) == {"name": "kept"}
+
+
 async def test_remove_single_provider_mapping_strips_provider_images(mass: MusicAssistant) -> None:
     """Removing the last mapping of a provider instance also strips its images."""
     artists = mass.music.artists

@@ -2135,8 +2135,10 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             )
             self.mass.config.save(True)
 
-        # always clear cache when a provider is removed
-        await self.mass.cache.clear()
+        # drop only what the removed provider cached: every other provider's cache is keyed
+        # by its own instance id and stays valid, and clearing it all would leave every
+        # page to be fetched again from its service
+        await self.mass.cache.delete(None, provider=provider_instance)
 
         # cleanup media items from db matched to deleted provider
         self.logger.info(
