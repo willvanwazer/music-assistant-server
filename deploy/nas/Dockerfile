@@ -9,7 +9,7 @@ RUN test ! -e music_assistant/helpers/app_secrets.json && python -m build --whee
 
 # Keep Music Assistant's shipped runtime and bundled integrations in place.
 # Only our application wheel is overlaid; no upstream credentials are extracted.
-FROM ghcr.io/music-assistant/server:2.10.9@sha256:4ac0d5844363fbbefd6a61251df09d96cd546e05e01b8c1cc1a28803f0935e07
+FROM ghcr.io/music-assistant/server:2.10.12@sha256:7eb272e2e13da9a5d61dcbc4e1fcfc734776222b23f2825a9b5690d4427cfafb
 COPY --from=package /src/dist /tmp/ma-fork-wheel
 RUN python - <<'INSTALL'
 import importlib.metadata
@@ -17,7 +17,7 @@ import pathlib
 import shutil
 import sysconfig
 import zipfile
-assert importlib.metadata.version("music-assistant") == "2.10.9"
+assert importlib.metadata.version("music-assistant") == "2.10.12"
 site = pathlib.Path(sysconfig.get_path("purelib"))
 for metadata in site.glob("music_assistant-*.dist-info"):
     shutil.rmtree(metadata)
