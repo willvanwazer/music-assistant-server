@@ -1,6 +1,6 @@
 # NAS runtime
 
-`build.sh IMAGE` builds the fork wheel over the pinned official Music Assistant 2.10.9
+`build.sh IMAGE` builds the fork wheel over the pinned official Music Assistant 2.10.12
 image. Official bundled integrations stay in their original runtime; credentials are
 never extracted into this repository or a separate file. Update the pinned release,
 requirements and frontend compatibility range together when upgrading upstream.
