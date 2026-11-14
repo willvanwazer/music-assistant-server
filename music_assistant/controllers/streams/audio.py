@@ -44,6 +44,7 @@ from music_assistant_models.enums import (
     CrossfadeMode,
     MediaType,
     PlayerFeature,
+    PlayerType,
     ProviderFeature,
     ProviderType,
     StreamType,
@@ -57,6 +58,8 @@ from music_assistant_models.errors import (
     ProviderPermissionDenied,
     ProviderUnavailableError,
     QueueEmpty,
+    RateLimited,
+    ResourceTemporarilyUnavailable,
     RetriesExhausted,
 )
 from music_assistant_models.media_items import Album, AudioFormat, Track
@@ -105,6 +108,7 @@ from music_assistant.controllers.streams.constants import (
     CONF_ALLOW_CROSSFADE_SAME_ALBUM,
     DEFAULT_VOLUME_NORMALIZATION_MODE,
     ICY_PLACEHOLDER_IMAGE_URLS,
+    NORMALIZATION_LIMITER_CEILING_DB,
     OUTCOME_ONLY_NORMALIZATION_MODES,
     STREAM_SLOT_MATCH_TIMEOUT,
     STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT,
@@ -1640,6 +1644,16 @@ class StreamsAudio:
             gain_correct = round(gain_correct, 2)
             filter_params.append(f"volume={gain_correct}dB")
         streamdetails.volume_normalization_gain_correct = gain_correct
+        # a positive gain can push peaks past full scale; a player's DSP chain owns its limiting
+        if (
+            gain_correct is not None
+            and gain_correct > 0
+            and not self._is_dsp_active_for_queue(streamdetails.queue_id)
+        ):
+            filter_params.append(
+                f"alimiter=limit={NORMALIZATION_LIMITER_CEILING_DB}dB"
+                ":level=false:asc=true:latency=true"
+            )
 
         # handle playback speed
         if playback_speed != 1.0:
@@ -3545,10 +3559,18 @@ class StreamsAudio:
                         prefer_album_loudness=prefer_album_loudness,
                         excluded_provider_instances=busy_instances,
                     )
-                except (AudioError, MediaNotFoundError) as err:
+                except (
+                    AudioError,
+                    MediaNotFoundError,
+                    ResourceTemporarilyUnavailable,
+                    RetriesExhausted,
+                ) as err:
                     if last_capacity_error is None:
                         raise
                     if final_pass:
+                        if isinstance(err, (ResourceTemporarilyUnavailable, RetriesExhausted)):
+                            # no source resolved while a provider asks us to back off
+                            raise
                         # capacity was the root cause, surface the typed (actionable) error
                         raise last_capacity_error from err
                     # no usable alternative mapping: restore the capacity-blocked details
@@ -3828,9 +3850,12 @@ class StreamsAudio:
         :param candidates: Candidates in mapping and compatible-instance order.
         :param media_type: Media type requested from each provider.
         :return: The first resolved stream details, or None when every candidate failed.
+        :raises RateLimited: When no candidate resolved and a provider is rate limited.
+        :raises RetriesExhausted: When no candidate resolved and a provider gave up retrying.
         :raises AudioError: The last (actionable) audio error when no candidate resolved.
         """
         last_audio_error: AudioError | None = None
+        temporary_error: RateLimited | RetriesExhausted | None = None
         for mapping, provider in candidates:
             # music and plugin providers share this signature, so either type can own the item
             token = BYPASS_THROTTLER.set(True)
@@ -3841,10 +3866,16 @@ class StreamsAudio:
                 # remember the last one so its (actionable) message can be re-raised
                 last_audio_error = err
                 self.logger.warning("%s", err)
+            except (RateLimited, RetriesExhausted) as err:
+                # the provider asked us to back off, the item may well play once it clears
+                temporary_error = err
+                self.logger.warning("%s", err)
             except MusicAssistantError as err:
                 self.logger.warning("%s", err)
             finally:
                 BYPASS_THROTTLER.reset(token)
+        if temporary_error is not None:
+            raise temporary_error
         if last_audio_error is not None:
             raise last_audio_error
         return None
@@ -4593,6 +4624,30 @@ class StreamsAudio:
             assert child_player is not None
             dsp_player_id = child_player.player_id
         return dsp_player_id
+
+    def _is_dsp_active_for_queue(self, queue_id: str | None) -> bool:
+        """
+        Return whether DSP runs on the queue's player and on every member of its group.
+
+        :param queue_id: The queue to check; an unknown queue or player counts as no DSP.
+        """
+        if not queue_id or not (player := self.mass.players.get_player(queue_id)):
+            return False
+        output_players = [
+            member
+            for member_id in player.state.group_members
+            if (member := self.mass.players.get_player(member_id))
+        ]
+        # a group player that hands DSP to its members has no DSP config of its own
+        if not (
+            player.state.type == PlayerType.GROUP
+            and PlayerFeature.MULTI_DEVICE_DSP in player.state.supported_features
+        ):
+            output_players.append(player)
+        return bool(output_players) and all(
+            self._resolve_player_dsp_config(output_player).enabled
+            for output_player in output_players
+        )
 
     def _get_output_channels(self, player: Player | None, player_id: str) -> str:
         """
