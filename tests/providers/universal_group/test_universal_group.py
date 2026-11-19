@@ -611,3 +611,206 @@ class TestSupportedFeaturesFromMembers:
         ugp.update_state()
 
         assert ugp.mute_control == PLAYER_CONTROL_NONE
+
+
+class TestNativeSubgroups:
+    """Members of one ecosystem that can group natively play in sync with each other."""
+
+    @pytest.mark.asyncio
+    async def test_play_groups_native_members_and_streams_to_leader(self) -> None:
+        """Groupable members join the first one; it and the standalone member get the stream."""
+        mass, ugp, players = self._setup()
+
+        with patch.object(ugp, "update_state"):
+            await ugp.play_media(self._media())
+
+        mass.players._handle_set_members.assert_awaited_once()
+        call = mass.players._handle_set_members.await_args
+        assert call.args[0] is players["sonos1"]
+        assert call.kwargs["player_ids_to_add"] == ["sonos2", "sonos3"]
+        assert call.kwargs["new_content"] is True
+        streamed = [c.args[0] for c in mass.players._handle_play_media.await_args_list]
+        assert sorted(streamed) == ["sonos1", "wiim"]
+        assert ugp._native_subgroups == {"sonos1": ["sonos2", "sonos3"]}
+
+    @pytest.mark.asyncio
+    async def test_takeover_is_finished_after_playback_starts(self) -> None:
+        """The native grouping's content takeover completes once the stream is sent."""
+        mass, ugp, _players = self._setup()
+        owner = MagicMock()
+        owner.on_group_content_takeover_finished = AsyncMock()
+        owner.on_group_content_takeover_aborted = AsyncMock()
+        mass.players._handle_set_members.return_value = (owner, "token")
+
+        with patch.object(ugp, "update_state"):
+            await ugp.play_media(self._media())
+
+        owner.on_group_content_takeover_finished.assert_awaited_once_with("token")
+        owner.on_group_content_takeover_aborted.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_other_providers_are_not_grouped(self) -> None:
+        """A member listed as groupable through another provider keeps its own stream."""
+        mass, ugp, players = self._setup()
+        players["sonos1"].state.can_group_with = ["sonos2", "sonos3", "wiim"]
+
+        with patch.object(ugp, "update_state"):
+            await ugp.play_media(self._media())
+
+        call = mass.players._handle_set_members.await_args
+        assert "wiim" not in call.kwargs["player_ids_to_add"]
+        streamed = [c.args[0] for c in mass.players._handle_play_media.await_args_list]
+        assert "wiim" in streamed
+
+    @pytest.mark.asyncio
+    async def test_failed_native_grouping_falls_back_to_separate_streams(self) -> None:
+        """If the native group can't be formed, every member still gets the stream."""
+        mass, ugp, _players = self._setup()
+        mass.players._handle_set_members.side_effect = RuntimeError("offline")
+
+        with patch.object(ugp, "update_state"):
+            await ugp.play_media(self._media())
+
+        streamed = [c.args[0] for c in mass.players._handle_play_media.await_args_list]
+        assert sorted(streamed) == ["sonos1", "sonos2", "sonos3", "wiim"]
+        assert ugp._native_subgroups == {}
+
+    @pytest.mark.asyncio
+    async def test_replay_keeps_formed_group(self) -> None:
+        """Playing again keeps the leader and does not ungroup its followers."""
+        mass, ugp, players = self._setup()
+        ugp._native_subgroups = {"sonos1": ["sonos2", "sonos3"]}
+        players["sonos1"].state.group_members = ["sonos1", "sonos2", "sonos3"]
+        for pid in ("sonos2", "sonos3"):
+            players[pid].synced_to = "sonos1"
+            players[pid].state.synced_to = "sonos1"
+            players[pid].state.active_group = "ugp_test"
+        # a synced follower reports no grouping candidates of its own
+        players["sonos2"].state.can_group_with = []
+
+        with patch.object(ugp, "update_state"):
+            await ugp.play_media(self._media())
+
+        players["sonos2"].ungroup.assert_not_awaited()
+        players["sonos3"].ungroup.assert_not_awaited()
+        mass.players._handle_set_members.assert_not_awaited()
+        streamed = [c.args[0] for c in mass.players._handle_play_media.await_args_list]
+        assert sorted(streamed) == ["sonos1", "wiim"]
+
+    @pytest.mark.asyncio
+    async def test_stop_stops_leaders_and_dissolves(self) -> None:
+        """Stop targets the stream receivers only, then ungroups the native followers."""
+        mass, ugp, players = self._setup()
+        ugp._native_subgroups = {"sonos1": ["sonos2", "sonos3"]}
+        stream = MagicMock()
+        stream.done = False
+        stream.stop = AsyncMock()
+        ugp.stream = stream
+
+        with patch.object(ugp, "update_state"):
+            await ugp.stop()
+
+        stopped = [c.args[0] for c in mass.players._handle_cmd_stop.await_args_list]
+        assert sorted(stopped) == ["sonos1", "wiim"]
+        mass.players._handle_set_members.assert_awaited_once_with(
+            players["sonos1"], player_ids_to_remove=["sonos2", "sonos3"]
+        )
+        assert ugp._native_subgroups == {}
+
+    @pytest.mark.asyncio
+    async def test_stop_keeps_native_group_when_pinned(self) -> None:
+        """A group pinned with Fake power keeps its native group across a stop."""
+        mass, ugp, _players = self._setup()
+        ugp._native_subgroups = {"sonos1": ["sonos2", "sonos3"]}
+        ugp._attr_powered = True
+
+        with patch.object(ugp, "update_state"):
+            await ugp.stop()
+
+        mass.players._handle_set_members.assert_not_awaited()
+        assert ugp._native_subgroups == {"sonos1": ["sonos2", "sonos3"]}
+
+    @pytest.mark.asyncio
+    async def test_removed_leader_hands_followers_their_own_stream(self) -> None:
+        """Removing a leader mid-session ungroups its followers and streams to each."""
+        mass, ugp, players = self._setup()
+        ugp._attr_static_group_members = list(players)
+        ugp._attr_group_members = list(players)
+        ugp._native_subgroups = {"sonos1": ["sonos2", "sonos3"]}
+        ugp.stream = MagicMock()
+        ugp.stream.done = False
+        ugp.stream.session_id = "session-1"
+        with (
+            patch.object(type(ugp), "is_dynamic", new=True),
+            patch.object(ugp, "update_state"),
+        ):
+            await ugp.set_members(player_ids_to_remove=["sonos1"])
+
+        mass.players._handle_set_members.assert_awaited_once_with(
+            players["sonos1"], player_ids_to_remove=["sonos2", "sonos3"]
+        )
+        streamed = [c.args[0] for c in mass.players._handle_play_media.await_args_list]
+        assert sorted(streamed) == ["sonos2", "sonos3"]
+
+    @pytest.mark.asyncio
+    async def test_added_member_joins_live_native_group(self) -> None:
+        """A member added during playback joins a matching native group, not a new stream."""
+        mass, ugp, players = self._setup()
+        ugp._attr_static_group_members = ["sonos1", "sonos2", "wiim"]
+        ugp._attr_group_members = ["sonos1", "sonos2", "wiim"]
+        ugp._native_subgroups = {"sonos1": ["sonos2"]}
+        ugp.stream = MagicMock()
+        ugp.stream.done = False
+        ugp.stream.session_id = "session-1"
+        with (
+            patch.object(type(ugp), "is_dynamic", new=True),
+            patch.object(ugp, "update_state"),
+        ):
+            await ugp.set_members(player_ids_to_add=["sonos3"])
+
+        mass.players._handle_set_members.assert_awaited_once_with(
+            players["sonos1"], player_ids_to_add=["sonos3"]
+        )
+        mass.players._handle_play_media.assert_not_awaited()
+        assert ugp._native_subgroups["sonos1"] == ["sonos2", "sonos3"]
+
+    @staticmethod
+    def _media() -> MagicMock:
+        """Return media to play on the group."""
+        return MagicMock(uri="track://x", source_id="src", queue_session_id="session-1")
+
+    @staticmethod
+    def _setup() -> tuple[MagicMock, UniversalGroupPlayer, dict[str, MagicMock]]:
+        """Create a group of three groupable Sonos members and one standalone WiiM."""
+        mass = _make_mock_mass()
+        mass.players._handle_set_members = AsyncMock(return_value=None)
+        ugp = _make_ugp(mass)
+        sonos = MagicMock()
+        sonos.instance_id = "sonos"
+        wiim = MagicMock()
+        wiim.instance_id = "wiim"
+        players: dict[str, MagicMock] = {}
+        for pid, provider in (
+            ("sonos1", sonos),
+            ("sonos2", sonos),
+            ("sonos3", sonos),
+            ("wiim", wiim),
+        ):
+            player = _make_mock_player(pid)
+            player.provider = provider
+            player.state.supported_features = {PlayerFeature.PLAY_MEDIA, PlayerFeature.SET_MEMBERS}
+            player.state.group_members = []
+            players[pid] = player
+        for pid in ("sonos1", "sonos2", "sonos3"):
+            players[pid].state.can_group_with = [
+                x for x in ("sonos1", "sonos2", "sonos3") if x != pid
+            ]
+        players["wiim"].state.can_group_with = []
+        ugp._attr_static_group_members = list(players)
+        mass.players.get_player = MagicMock(
+            side_effect=lambda pid, *_args, **_kwargs: players.get(pid)
+        )
+        mass.players.iter_group_members.side_effect = lambda *_args, **_kwargs: iter(
+            list(players.values())
+        )
+        return mass, ugp, players

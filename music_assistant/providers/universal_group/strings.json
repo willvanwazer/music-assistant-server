@@ -1,7 +1,7 @@
 {
   "config_entries": {
     "ugp_note": {
-      "label": "Please note that although the Universal Group allows you to group any player, it will not (and can not) enable audio sync between players of different ecosystems. It is advised to always use native player groups or sync groups when available for your player type(s) and use the Universal Group only to group players of different ecosystems/protocols."
+      "label": "Please note that although the Universal Group allows you to group any player, it will not (and can not) enable audio sync between players of different ecosystems. Members of the same ecosystem that support native grouping (for example several Sonos speakers) are grouped natively while the group plays, so they stay in sync with each other. It is advised to always use native player groups or sync groups when all players share an ecosystem and use the Universal Group only to group players of different ecosystems/protocols."
     },
     "ugp_output_format": {
       "label": "Output format for Universal Group playback",
@@ -22,7 +22,7 @@
     }
   },
   "manifest": {
-    "description": "Create universal groups to group speakers of different protocols/ecosystems to play the same audio (but not in sync)."
+    "description": "Create universal groups to group speakers of different protocols/ecosystems to play the same audio (in sync only within an ecosystem)."
   },
   "errors": {
     "group_not_dynamic": "Group {0} does not allow dynamically adding or removing members.",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from copy import deepcopy
 from time import time
 from typing import TYPE_CHECKING, cast
@@ -91,6 +92,9 @@ class UniversalGroupPlayer(Player):
         self._attr_poll_interval = 30
         # task that releases members after the idle grace window expires
         self._idle_grace_task: asyncio.Task[None] | None = None
+        # native sync groups formed among the members for the current session:
+        # leader player_id -> follower player_ids
+        self._native_subgroups: dict[str, list[str]] = {}
         # register dynamic routes for the ugp stream (FLAC + MP3 cover the configured
         # output formats; the actual codec served is decided by the UGP's own config,
         # not by the request URL)
@@ -235,8 +239,13 @@ class UniversalGroupPlayer(Player):
         self._cancel_idle_grace_timer()
         async with TaskManager(self.mass) as tg:
             for member in self.mass.players.iter_group_members(self, active_only=True):
+                if self._native_leader_of(member.player_id):
+                    # a native follower stops with its leader
+                    continue
                 # Use internal handler to get protocol selection and avoid redirect
                 tg.create_task(self.mass.players._handle_cmd_stop(member.player_id))
+        if self._attr_powered is not True:
+            await self._dissolve_native_subgroups()
         # abort the stream session — this drops is_active_session to False so
         # the (former) members will see active_group=None on their next state
         # update and accept direct playback commands again.
@@ -285,6 +294,7 @@ class UniversalGroupPlayer(Player):
                     await self.mass.players.cmd_power(member.player_id, False)
 
         if not powered:
+            await self._dissolve_native_subgroups()
             # reset the original group members when powered off
             self._attr_group_members = self._attr_static_group_members.copy()
         self.update_state()
@@ -301,7 +311,7 @@ class UniversalGroupPlayer(Player):
             await self.stream.stop()
 
         # resolve the static output format the UGP serves to all members
-        output_format, fmt_str = resolve_ugp_output_format(
+        output_format, _ = resolve_ugp_output_format(
             cast("str", self.config.get_value(CONF_UGP_OUTPUT_FORMAT, UGP_OUTPUT_MP3))
         )
         # internal PCM pivot for the multiplexer: F32 at the configured output rate
@@ -320,7 +330,6 @@ class UniversalGroupPlayer(Player):
             queue_id=media.source_id,
             session_id=get_media_session_id(media),
         )
-        base_url = f"{self.mass.streams.base_url}/ugp/{self.player_id}.{fmt_str}"
 
         # set the state optimistically
         self._attr_current_media = deepcopy(media)
@@ -329,25 +338,28 @@ class UniversalGroupPlayer(Player):
         self._attr_playback_state = PlaybackState.PLAYING
         self.update_state()
 
-        # forward to downstream play_media commands
-        async with TaskManager(self.mass) as tg:
-            for member in self.mass.players.iter_group_members(self, only_powered=True):
-                # Use internal handler to get protocol selection and avoid redirect
-                tg.create_task(
-                    self._play_media_on_member(
-                        member.player_id,
-                        PlayerMedia(
-                            uri=f"{base_url}?player_id={member.player_id}",
-                            media_type=MediaType.FLOW_STREAM,
-                            title=self.display_name,
-                            source_id=self.player_id,
-                            queue_session_id=self.stream.session_id,
-                            custom_data={
-                                "ugp_player_id": self.player_id,
-                            },
-                        ),
+        # members that can group natively play in sync with their leader, so only the
+        # leaders and the remaining standalone members receive the group stream
+        members = list(self.mass.players.iter_group_members(self, only_powered=True))
+        stream_targets, takeovers = await self._form_native_subgroups(members)
+        playback_started = False
+        try:
+            # forward to downstream play_media commands
+            async with TaskManager(self.mass) as tg:
+                for member in stream_targets:
+                    # Use internal handler to get protocol selection and avoid redirect
+                    tg.create_task(
+                        self._play_media_on_member(
+                            member.player_id, self._member_media(member.player_id)
+                        )
                     )
-                )
+            playback_started = True
+        finally:
+            for takeover_owner, takeover_token in takeovers:
+                if playback_started:
+                    await takeover_owner.on_group_content_takeover_finished(takeover_token)
+                else:
+                    await takeover_owner.on_group_content_takeover_aborted(takeover_token)
 
     async def set_members(
         self,
@@ -384,24 +396,10 @@ class UniversalGroupPlayer(Player):
             # session-lifecycle refactor (groups now have `_attr_powered=None`
             # unless the user assigned Fake control).
             if self.stream and not self.stream.done:
-                _, fmt_str = resolve_ugp_output_format(
-                    cast("str", self.config.get_value(CONF_UGP_OUTPUT_FORMAT, UGP_OUTPUT_MP3))
-                )
-                base_url = f"{self.mass.streams.base_url}/ugp/{self.player_id}.{fmt_str}"
+                if await self._join_native_subgroup(child_player):
+                    continue
                 # Use internal handler to get protocol selection and avoid redirect
-                await self._play_media_on_member(
-                    player_id,
-                    PlayerMedia(
-                        uri=f"{base_url}?player_id={player_id}",
-                        media_type=MediaType.FLOW_STREAM,
-                        title=self.display_name,
-                        source_id=self.player_id,
-                        queue_session_id=self.stream.session_id,
-                        custom_data={
-                            "ugp_player_id": self.player_id,
-                        },
-                    ),
-                )
+                await self._play_media_on_member(player_id, self._member_media(player_id))
         # handle removals
         for player_id in player_ids_to_remove or []:
             if player_id not in self._attr_group_members:
@@ -415,6 +413,7 @@ class UniversalGroupPlayer(Player):
                     translation_args=[self.display_name],
                 )
             self._attr_group_members.remove(player_id)
+            await self._release_from_native_subgroups(player_id)
             child_player = self.mass.players.get_player(player_id, True)
             assert child_player is not None  # for type checking
             if child_player.playback_state in (
@@ -502,11 +501,229 @@ class UniversalGroupPlayer(Player):
                             member.player_id, timeout=5
                         ):
                             await other_group.stop()
-            if member.synced_to:
+            if member.synced_to and member.synced_to != self._native_leader_of(member.player_id):
                 # member is part of a syncgroup — release it first
                 await member.ungroup()
             if not member.powered and member.power_control != PLAYER_CONTROL_NONE:
                 await self.mass.players.cmd_power(member.player_id, True)
+
+    def _member_media(self, player_id: str) -> PlayerMedia:
+        """
+        Return the media that points a member at the live group stream.
+
+        :param player_id: The member that will play the stream.
+        """
+        assert self.stream is not None  # for type checking
+        _, fmt_str = resolve_ugp_output_format(
+            cast("str", self.config.get_value(CONF_UGP_OUTPUT_FORMAT, UGP_OUTPUT_MP3))
+        )
+        base_url = f"{self.mass.streams.base_url}/ugp/{self.player_id}.{fmt_str}"
+        return PlayerMedia(
+            uri=f"{base_url}?player_id={player_id}",
+            media_type=MediaType.FLOW_STREAM,
+            title=self.display_name,
+            source_id=self.player_id,
+            queue_session_id=self.stream.session_id,
+            custom_data={
+                "ugp_player_id": self.player_id,
+            },
+        )
+
+    def _native_leader_of(self, player_id: str) -> str | None:
+        """
+        Return the native subgroup leader the given member follows, if any.
+
+        :param player_id: The member to look up.
+        """
+        for leader_id, follower_ids in self._native_subgroups.items():
+            if player_id in follower_ids:
+                return leader_id
+        return None
+
+    @staticmethod
+    def _can_follow_natively(leader: Player, follower: Player) -> bool:
+        """
+        Return whether a member can join another member's native sync group.
+
+        Only players of the same provider are combined, so the group stays on that
+        ecosystem's own grouping rather than switching to a shared streaming protocol.
+
+        :param leader: The member that would lead the native group.
+        :param follower: The member that would join it.
+        """
+        if leader.player_id == follower.player_id:
+            return False
+        if leader.provider.instance_id != follower.provider.instance_id:
+            return False
+        if PlayerFeature.SET_MEMBERS not in leader.state.supported_features:
+            return False
+        return bool(
+            follower.state.synced_to == leader.player_id
+            or follower.player_id in leader.state.can_group_with
+        )
+
+    def _plan_native_subgroups(self, members: list[Player]) -> dict[str, list[str]]:
+        """
+        Plan which members play in sync through a native group, keyed by leader.
+
+        Leaders from the current session are kept, so replaying does not reshuffle
+        groups that are already formed.
+
+        :param members: The powered members that will play the group stream.
+        """
+        ordered = sorted(members, key=lambda m: m.player_id not in self._native_subgroups)
+        plan: dict[str, list[str]] = {}
+        assigned: set[str] = set()
+        for leader in ordered:
+            if leader.player_id in assigned:
+                continue
+            assigned.add(leader.player_id)
+            followers = [
+                m.player_id
+                for m in ordered
+                if m.player_id not in assigned and self._can_follow_natively(leader, m)
+            ]
+            assigned.update(followers)
+            plan[leader.player_id] = followers
+        return plan
+
+    async def _form_native_subgroups(
+        self, members: list[Player]
+    ) -> tuple[list[Player], list[tuple[Player, object]]]:
+        """
+        Group members that can play in sync natively and return the stream targets.
+
+        The caller owns the returned takeover transactions and must finish or abort
+        each one once playback has (or has not) started.
+
+        :param members: The powered members that will play the group stream.
+        """
+        plan = self._plan_native_subgroups(members)
+        # release followers of the previous session that the new plan places elsewhere
+        for leader_id, follower_ids in list(self._native_subgroups.items()):
+            stale = [f for f in follower_ids if f not in plan.get(leader_id, [])]
+            if stale:
+                await self._ungroup_native(leader_id, stale)
+        self._native_subgroups = {}
+        takeovers: list[tuple[Player, object]] = []
+        followers: set[str] = set()
+        for leader_id, follower_ids in plan.items():
+            if not follower_ids or not (leader := self.mass.players.get_player(leader_id)):
+                continue
+            to_add = [f for f in follower_ids if f not in leader.state.group_members]
+            if to_add:
+                try:
+                    async with self.mass.players.get_player_lock(
+                        leader_id, PlayerLockPurpose.PLAYBACK
+                    ):
+                        takeover = await self.mass.players._handle_set_members(
+                            leader, player_ids_to_add=to_add, new_content=True
+                        )
+                except Exception as err:
+                    # the members still play, each on its own stream
+                    self.logger.warning(
+                        "Could not group %s natively for universal group %s: %s",
+                        leader.display_name,
+                        self.display_name,
+                        err,
+                    )
+                    continue
+                if takeover is not None:
+                    takeovers.append(takeover)
+            self._native_subgroups[leader_id] = follower_ids
+            followers.update(follower_ids)
+            self.logger.debug(
+                "Universal group %s plays %s in sync natively with %s",
+                self.display_name,
+                leader.display_name,
+                follower_ids,
+            )
+        return [m for m in members if m.player_id not in followers], takeovers
+
+    async def _join_native_subgroup(self, member: Player) -> bool:
+        """
+        Add a member to a live native subgroup it can follow, instead of a separate stream.
+
+        Returns True when the member joined a subgroup.
+
+        :param member: The member being added during playback.
+        """
+        for leader_id, follower_ids in self._native_subgroups.items():
+            leader = self.mass.players.get_player(leader_id)
+            if not leader or not self._can_follow_natively(leader, member):
+                continue
+            try:
+                async with self.mass.players.get_player_lock(leader_id, PlayerLockPurpose.PLAYBACK):
+                    takeover = await self.mass.players._handle_set_members(
+                        leader, player_ids_to_add=[member.player_id]
+                    )
+            except Exception as err:
+                self.logger.warning(
+                    "Could not add %s to the native group of %s: %s",
+                    member.display_name,
+                    leader.display_name,
+                    err,
+                )
+                return False
+            if takeover is not None:
+                takeover_owner, takeover_token = takeover
+                await takeover_owner.on_group_content_takeover_finished(takeover_token)
+            follower_ids.append(member.player_id)
+            return True
+        return False
+
+    async def _release_from_native_subgroups(self, player_id: str) -> None:
+        """
+        Take a member that is leaving the group out of its native subgroup.
+
+        A departing leader hands its followers their own stream, so they keep playing.
+
+        :param player_id: The member leaving the group.
+        """
+        if leader_id := self._native_leader_of(player_id):
+            self._native_subgroups[leader_id].remove(player_id)
+            await self._ungroup_native(leader_id, [player_id])
+            return
+        follower_ids = self._native_subgroups.pop(player_id, [])
+        if not follower_ids:
+            return
+        await self._ungroup_native(player_id, follower_ids)
+        if self.stream and not self.stream.done:
+            for follower_id in follower_ids:
+                await self._play_media_on_member(follower_id, self._member_media(follower_id))
+
+    async def _dissolve_native_subgroups(self) -> None:
+        """Ungroup every native subgroup formed for the session."""
+        subgroups, self._native_subgroups = self._native_subgroups, {}
+        for leader_id, follower_ids in subgroups.items():
+            if follower_ids:
+                await self._ungroup_native(leader_id, follower_ids)
+
+    async def _ungroup_native(self, leader_id: str, follower_ids: list[str]) -> None:
+        """
+        Remove followers from a leader's native group.
+
+        :param leader_id: The native group leader.
+        :param follower_ids: The followers to release.
+        """
+        if not (leader := self.mass.players.get_player(leader_id)):
+            return
+        try:
+            async with self.mass.players.get_player_lock(leader_id, PlayerLockPurpose.PLAYBACK):
+                await self.mass.players._handle_set_members(
+                    leader, player_ids_to_remove=follower_ids
+                )
+        except Exception as err:
+            # a leader that dropped off the network can't release its followers;
+            # the provider (or the next form) does
+            self.logger.log(
+                logging.WARNING if leader.state.available else logging.DEBUG,
+                "Could not ungroup %s from %s for universal group %s: %s",
+                follower_ids,
+                leader.display_name,
+                self.display_name,
+                err,
+            )
 
     def _set_attributes(self) -> None:
         """Set attributes of the group player."""
@@ -581,6 +798,7 @@ class UniversalGroupPlayer(Player):
         if self.stream and not self.stream.done:
             await self.stream.stop()
             self.stream = None
+        await self._dissolve_native_subgroups()
         # snap group_members back to the configured static set; this drops
         # is_active_session to False so children see active_group=None.
         self._attr_group_members = self._attr_static_group_members.copy()
