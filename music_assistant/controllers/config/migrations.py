@@ -69,7 +69,8 @@ CONF_AI_ENGINE = "ai_engine"
 CONF_TTS_ENGINE = "tts_engine"
 
 
-# Canonical ids of the shared icon set (music-assistant/shared-icons v0.3.0);
+# Canonical ids of the shared icon set (music-assistant/shared-icons v0.3.0, plus this
+# fork's homeview);
 # stored icon values already in this set are never touched by the icon migration.
 _CANONICAL_ICON_IDS: frozenset[str] = frozenset(
     (
@@ -77,6 +78,7 @@ _CANONICAL_ICON_IDS: frozenset[str] = frozenset(
         "sonos",
         "mac",
         "apple-tv",
+        "homeview",
         "google-nest",
         "voice-pe",
         "wiim",

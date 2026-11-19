@@ -21,6 +21,7 @@ _DEFAULT_ICONS_BY_PLAYER_TYPE = {
 }
 
 _DEFAULT_ICON_MATCHES = (
+    ("homeview", ("homeview",)),
     ("homepod-mini", ("homepod",)),
     ("apple-tv", ("apple tv", "appletv")),
     (

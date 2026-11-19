@@ -23,6 +23,7 @@ from tests.common import MockPlayer, MockProvider
         (PlayerType.PLAYER, "wiim", "Linkplay", "Unknown", "wiim"),
         (PlayerType.PLAYER, "airplay", "Apple", "Apple TV 4K Gen2", "apple-tv"),
         (PlayerType.PLAYER, "airplay", "Apple", "HomePod", "homepod-mini"),
+        (PlayerType.PLAYER, "airplay", "Apple", "HomeView", "homeview"),
         (PlayerType.PLAYER, "airplay", "Apple", "Mac14,3", "mac"),
         (
             PlayerType.PLAYER,
