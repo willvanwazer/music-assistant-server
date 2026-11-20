@@ -61,6 +61,46 @@ UGP_OUTPUT_FORMATS: Final[dict[str, tuple[AudioFormat, str]]] = {
 }
 
 
+# How long the group stream holds its start for the members it was sent to. Speakers
+# take anything from a fraction of a second to a few seconds to open the stream, and
+# only the ones that are there at the start receive it from the beginning. A member
+# that takes longer is placed on the running stream instead.
+START_GATE_TIMEOUT: Final[float] = 4.0
+
+# The same wait for a stream that was not told which members to expect.
+START_GATE_UNKNOWN_MEMBERS: Final[float] = 0.25
+
+# Audio the group stream holds before it starts, in seconds. Speakers begin to play
+# once their own buffer has filled; handing every one of them this much at once makes
+# that moment the same whether the source delivers ahead of playback or just in time.
+CONF_UGP_START_CUSHION: Final[str] = "ugp_start_cushion"
+DEFAULT_START_CUSHION: Final[int] = 2
+
+# Longest a start waits, beyond the cushion itself, for a source that is slow to fill it.
+START_CUSHION_GRACE: Final[float] = 2.0
+
+# Per-member playback delay, in milliseconds, keyed by the member's player id.
+CONF_UGP_MEMBER_DELAY_PREFIX: Final[str] = "ugp_member_delay_"
+MAX_MEMBER_DELAY_MS: Final[int] = 2000
+
+# A member that has not even fetched the audio from this long ago can not be playing
+# in time anymore, so its feed moves up to the present instead of staying behind.
+RESYNC_THRESHOLD: Final[float] = 3.0
+
+# Audio the group stream keeps, in seconds, to place members that connect late,
+# reconnect or fall behind. It spans what the stream may run ahead of playback (the
+# opening burst of the pacing plus the start gate), the longest member delay and the
+# resync threshold.
+BACKLOG_SECONDS: Final[float] = 20.0
+
+# First look at how far each member plays behind the stream, in seconds after a start.
+# The members have settled on the stream by then.
+TIMING_REPORT_DELAY: Final[float] = 12.0
+
+# Change of the spread between the members, in seconds, that is reported again.
+TIMING_REPORT_CHANGE: Final[float] = 0.5
+
+
 CONFIG_ENTRY_UGP_NOTE = ConfigEntry(
     key="ugp_note",
     type=ConfigEntryType.ALERT,
@@ -79,6 +119,25 @@ CONF_ENTRY_UGP_OUTPUT_FORMAT = ConfigEntry(
     category="generic",
     requires_reload=True,
 )
+
+
+CONF_ENTRY_UGP_START_CUSHION = ConfigEntry(
+    key=CONF_UGP_START_CUSHION,
+    type=ConfigEntryType.INTEGER,
+    range=(0, 6),
+    default_value=DEFAULT_START_CUSHION,
+    category="generic",
+    advanced=True,
+)
+
+
+def member_delay_key(player_id: str) -> str:
+    """
+    Return the config key that holds a member's playback delay.
+
+    :param player_id: The member the delay applies to.
+    """
+    return f"{CONF_UGP_MEMBER_DELAY_PREFIX}{player_id}"
 
 
 def resolve_ugp_output_format(option: str) -> tuple[AudioFormat, str]:

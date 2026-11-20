@@ -10,7 +10,9 @@ idle grace window; these tests pin that behavior in place.
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+import logging
+from time import time
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -23,6 +25,10 @@ from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerTyp
 
 from music_assistant.constants import CONF_GROUP_MEMBERS
 from music_assistant.controllers.players.constants import PlayerLockPurpose
+from music_assistant.providers.universal_group.constants import (
+    CONF_UGP_START_CUSHION,
+    member_delay_key,
+)
 from music_assistant.providers.universal_group.player import UniversalGroupPlayer
 
 
@@ -814,3 +820,160 @@ class TestNativeSubgroups:
             list(players.values())
         )
         return mass, ugp, players
+
+
+class TestStreamTiming:
+    """The group keeps members of different ecosystems on the same stream position."""
+
+    @pytest.mark.asyncio
+    async def test_stream_waits_for_the_members_it_is_sent_to(self) -> None:
+        """Only the members that receive the stream hold its start, not native followers."""
+        _mass, ugp, _players = TestNativeSubgroups._setup()
+
+        with patch.object(ugp, "update_state"):
+            await ugp.play_media(TestNativeSubgroups._media())
+
+        assert ugp.stream is not None
+        assert ugp.stream._expected == {"sonos1", "wiim"}
+
+    @pytest.mark.asyncio
+    async def test_member_that_fails_to_start_does_not_hold_the_stream(self) -> None:
+        """A member whose play command fails is not waited for."""
+        mass, ugp, _players = TestNativeSubgroups._setup()
+
+        async def _play(player_id: str, _media: Any) -> None:
+            if player_id == "wiim":
+                raise RuntimeError("offline")
+
+        mass.players._handle_play_media = AsyncMock(side_effect=_play)
+
+        with patch.object(ugp, "update_state"):
+            await ugp.play_media(TestNativeSubgroups._media())
+
+        assert ugp.stream is not None
+        assert ugp.stream._expected == {"sonos1"}
+
+    @pytest.mark.asyncio
+    async def test_stream_gets_the_configured_member_delays(self) -> None:
+        """The playback delay of each member reaches the stream in seconds."""
+        _mass, ugp, _players = TestNativeSubgroups._setup()
+        self._configure(ugp, {member_delay_key("wiim"): 350, CONF_UGP_START_CUSHION: 3})
+
+        with (
+            patch.object(ugp, "update_state"),
+            patch("music_assistant.providers.universal_group.player.UGPStream") as stream_cls,
+        ):
+            await ugp.play_media(TestNativeSubgroups._media())
+
+        kwargs = stream_cls.call_args.kwargs
+        assert kwargs["member_delays"] == {"wiim": 0.35}
+        assert kwargs["start_cushion"] == 3
+
+    @pytest.mark.asyncio
+    async def test_every_configured_member_has_a_delay_setting(self) -> None:
+        """Each configured member gets its own delay entry, named after the member."""
+        mass = _make_mock_mass()
+        mass.players.all_players.return_value = []
+        ugp = _make_ugp(mass)
+        ugp._attr_static_group_members = ["m1", "m2"]
+        member = _make_mock_player("m1")
+        member.display_name = "Kitchen"
+        mass.players.get_player = MagicMock(
+            side_effect=lambda pid, *_args, **_kwargs: member if pid == "m1" else None
+        )
+
+        entries = {entry.key: entry for entry in await ugp.get_config_entries()}
+
+        assert entries[member_delay_key("m1")].translation_params == ["Kitchen"]
+        # a member that is not registered right now keeps its setting
+        assert entries[member_delay_key("m2")].translation_params == ["m2"]
+        assert entries[member_delay_key("m1")].default_value == 0
+        assert CONF_UGP_START_CUSHION in entries
+
+    def test_timing_report_lists_how_far_each_member_is_behind(self) -> None:
+        """The report compares each member's reported position with what was due."""
+        _mass, ugp, logged = self._timing_setup({"sonos1": 9.4, "wiim": 8.1})
+
+        ugp._report_member_timing()
+
+        level, message = logged[0]
+        assert level == logging.INFO
+        assert "sonos1 0.60s" in message
+        assert "wiim 1.90s" in message
+        assert "1.30s apart" in message
+
+    def test_timing_report_is_repeated_only_when_the_spread_changes(self) -> None:
+        """A steady group reports once, a member that drifts is reported again."""
+        _mass, ugp, logged = self._timing_setup({"sonos1": 9.4, "wiim": 8.1})
+
+        ugp._report_member_timing()
+        ugp._report_member_timing()
+        assert [level for level, _ in logged] == [logging.INFO, logging.DEBUG]
+
+        self._set_position(_mass, "wiim", 7.0)
+        ugp._report_member_timing()
+        assert logged[-1][0] == logging.INFO
+
+    def test_timing_report_counts_skipped_audio_as_played(self) -> None:
+        """A member that was moved ahead is not reported as behind by what it skipped."""
+        _mass, ugp, logged = self._timing_setup({"sonos1": 9.4, "wiim": 5.0}, skipped={"wiim": 4})
+
+        ugp._report_member_timing()
+
+        assert "wiim 1.00s" in logged[0][1]
+
+    def test_timing_report_ignores_positions_that_do_not_fit_the_feed(self) -> None:
+        """A member that reports more than it can have played is left out."""
+        _mass, ugp, logged = self._timing_setup({"sonos1": 9.4, "wiim": 250.0})
+
+        ugp._report_member_timing()
+
+        assert "wiim" not in logged[0][1]
+        assert "sonos1 0.60s" in logged[0][1]
+
+    def test_timing_report_needs_a_running_stream(self) -> None:
+        """Nothing is reported without a stream that has started."""
+        _mass, ugp, logged = self._timing_setup({"sonos1": 9.4}, started=False)
+
+        ugp._report_member_timing()
+
+        assert logged == []
+
+    @staticmethod
+    def _configure(ugp: UniversalGroupPlayer, values: dict[str, object]) -> None:
+        """Give the group the given config values."""
+        config = cast("MagicMock", ugp.config)
+        config.get_value = MagicMock(side_effect=lambda key, default=None: values.get(key, default))
+
+    @staticmethod
+    def _set_position(mass: MagicMock, player_id: str, elapsed: float) -> None:
+        """Let a member report a position, taken right now."""
+        state = mass.players.get_player(player_id).state
+        state.playback_state = PlaybackState.PLAYING
+        state.elapsed_time = elapsed
+        state.elapsed_time_last_updated = time()
+
+    @classmethod
+    def _timing_setup(
+        cls,
+        positions: dict[str, float],
+        skipped: dict[str, float] | None = None,
+        started: bool = True,
+    ) -> tuple[MagicMock, UniversalGroupPlayer, list[tuple[int, str]]]:
+        """Create a group 10 seconds into a stream, with members at the given positions."""
+        mass, ugp, _players = TestNativeSubgroups._setup()
+        feeds = {player_id: MagicMock(player_id=player_id) for player_id in positions}
+        stream = MagicMock()
+        stream.done = False
+        stream.started = started
+        stream.feeds = feeds
+        stream.subscribers = list(feeds.values())
+        stream.seconds_due.return_value = 10.0
+        stream.seconds_skipped.side_effect = lambda feed: (skipped or {}).get(feed.player_id, 0)
+        ugp.stream = stream
+        for player_id, elapsed in positions.items():
+            cls._set_position(mass, player_id, elapsed)
+        logged: list[tuple[int, str]] = []
+        ugp.logger = MagicMock()
+        ugp.logger.log.side_effect = lambda level, msg, *args: logged.append((level, msg % args))
+        return mass, ugp, logged

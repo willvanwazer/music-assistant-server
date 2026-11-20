@@ -40,11 +40,18 @@ from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
 from .constants import (
     CONF_ENTRY_UGP_OUTPUT_FORMAT,
+    CONF_ENTRY_UGP_START_CUSHION,
     CONF_UGP_OUTPUT_FORMAT,
+    CONF_UGP_START_CUSHION,
     CONFIG_ENTRY_UGP_NOTE,
+    DEFAULT_START_CUSHION,
     EXTRA_FEATURES_FROM_MEMBERS,
     IDLE_GRACE_SECONDS,
+    MAX_MEMBER_DELAY_MS,
+    TIMING_REPORT_CHANGE,
+    TIMING_REPORT_DELAY,
     UGP_OUTPUT_MP3,
+    member_delay_key,
     resolve_ugp_output_format,
 )
 from .ugp_stream import UGPStream
@@ -95,6 +102,8 @@ class UniversalGroupPlayer(Player):
         # native sync groups formed among the members for the current session:
         # leader player_id -> follower player_ids
         self._native_subgroups: dict[str, list[str]] = {}
+        # spread between the members that was last reported for the current stream
+        self._reported_spread: float | None = None
         # register dynamic routes for the ugp stream (FLAC + MP3 cover the configured
         # output formats; the actual codec served is decided by the UGP's own config,
         # not by the request URL)
@@ -222,6 +231,8 @@ class UniversalGroupPlayer(Player):
                 required=False,
             ),
             CONF_ENTRY_UGP_OUTPUT_FORMAT,
+            CONF_ENTRY_UGP_START_CUSHION,
+            *self._member_delay_entries(),
             CONF_ENTRY_HTTP_PROFILE_DEFAULT_1,
         ]
 
@@ -323,13 +334,18 @@ class UniversalGroupPlayer(Player):
             channels=2,
         )
         audio_source = self.mass.streams.get_stream(media, pivot_format, self.player_id)
-        self.stream = UGPStream(
+        self.stream = stream = UGPStream(
             audio_source=audio_source,
             audio_format=pivot_format,
             base_pcm_format=pivot_format,
             queue_id=media.source_id,
             session_id=get_media_session_id(media),
+            start_cushion=self._config_number(CONF_UGP_START_CUSHION, DEFAULT_START_CUSHION),
+            member_delays=self._member_delays(),
+            name=self.display_name,
+            member_name=self._member_name,
         )
+        self._reported_spread = None
 
         # set the state optimistically
         self._attr_current_media = deepcopy(media)
@@ -342,6 +358,13 @@ class UniversalGroupPlayer(Player):
         # leaders and the remaining standalone members receive the group stream
         members = list(self.mass.players.iter_group_members(self, only_powered=True))
         stream_targets, takeovers = await self._form_native_subgroups(members)
+        # the stream starts once all of them have connected, so they all get it from the start
+        stream.expect_members(member.player_id for member in stream_targets)
+        self.mass.call_later(
+            TIMING_REPORT_DELAY,
+            self._report_member_timing,
+            task_id=f"ugp_timing_{self.player_id}",
+        )
         playback_started = False
         try:
             # forward to downstream play_media commands
@@ -428,6 +451,7 @@ class UniversalGroupPlayer(Player):
     async def poll(self) -> None:
         """Poll player for state updates."""
         self._set_attributes()
+        self._report_member_timing()
 
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
@@ -440,8 +464,14 @@ class UniversalGroupPlayer(Player):
 
     async def _play_media_on_member(self, player_id: str, media: PlayerMedia) -> None:
         """Play media directly on a group member under its playback lock."""
-        async with self.mass.players.get_player_lock(player_id, PlayerLockPurpose.PLAYBACK):
-            await self.mass.players._handle_play_media(player_id, media)
+        try:
+            async with self.mass.players.get_player_lock(player_id, PlayerLockPurpose.PLAYBACK):
+                await self.mass.players._handle_play_media(player_id, media)
+        except Exception:
+            # it will not connect, so the stream must not wait for it
+            if self.stream:
+                self.stream.release_member(player_id)
+            raise
 
     async def _capture_members(self) -> None:
         """
@@ -527,6 +557,93 @@ class UniversalGroupPlayer(Player):
             custom_data={
                 "ugp_player_id": self.player_id,
             },
+        )
+
+    def _config_number(self, key: str, default: float) -> float:
+        """
+        Return a numeric config value of the group, or the default when it is not a number.
+
+        :param key: The config key to read.
+        :param default: The value to fall back to.
+        """
+        value = self.config.get_value(key, default)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return default
+        return value
+
+    def _member_name(self, player_id: str) -> str:
+        """
+        Return the name of a member for logging.
+
+        :param player_id: The member to name.
+        """
+        member = self.mass.players.get_player(player_id)
+        return member.display_name if member else player_id
+
+    def _member_delays(self) -> dict[str, float]:
+        """Return the configured playback delay per member, in seconds."""
+        delays: dict[str, float] = {}
+        for member_id in self._attr_static_group_members:
+            delay_ms = self._config_number(member_delay_key(member_id), 0)
+            if delay_ms > 0:
+                delays[member_id] = min(delay_ms, MAX_MEMBER_DELAY_MS) / 1000
+        return delays
+
+    def _member_delay_entries(self) -> list[ConfigEntry]:
+        """Return the playback delay setting of each configured member."""
+        return [
+            ConfigEntry(
+                key=member_delay_key(member_id),
+                type=ConfigEntryType.INTEGER,
+                range=(0, MAX_MEMBER_DELAY_MS),
+                default_value=0,
+                required=False,
+                category="generic",
+                translation_key="ugp_member_delay",
+                translation_params=[self._member_name(member_id)],
+            )
+            for member_id in self._attr_static_group_members
+        ]
+
+    def _report_member_timing(self) -> None:
+        """Log how far each member plays behind the group stream."""
+        stream = self.stream
+        if stream is None or stream.done or not stream.started:
+            return
+        now = time()
+        lags: dict[str, float] = {}
+        for member_id, feed in stream.feeds.items():
+            member = self.mass.players.get_player(member_id)
+            if feed not in stream.subscribers or member is None:
+                continue
+            state = member.state
+            if (
+                state.playback_state != PlaybackState.PLAYING
+                or state.elapsed_time is None
+                or state.elapsed_time_last_updated is None
+            ):
+                continue
+            played = state.elapsed_time + (now - state.elapsed_time_last_updated)
+            lag = stream.seconds_due(feed) - played - stream.seconds_skipped(feed)
+            # a position that does not belong to this feed says nothing about its timing
+            if -1 <= lag <= 30:
+                lags[member.display_name] = lag
+        if not lags:
+            return
+        spread = max(lags.values()) - min(lags.values())
+        changed = (
+            self._reported_spread is None
+            or abs(spread - self._reported_spread) >= TIMING_REPORT_CHANGE
+        )
+        if changed:
+            self._reported_spread = spread
+        self.logger.log(
+            logging.INFO if changed else logging.DEBUG,
+            "Universal group %s: by their reported position, members play behind the "
+            "stream by %s (%.2fs apart)",
+            self.display_name,
+            ", ".join(f"{name} {lag:.2f}s" for name, lag in lags.items()),
+            spread,
         )
 
     def _native_leader_of(self, player_id: str) -> str | None:
@@ -815,7 +932,8 @@ class UniversalGroupPlayer(Player):
 
         if not (ugp_player := self.mass.players.get_player(ugp_player_id)):
             raise web.HTTPNotFound(reason=f"Unknown UGP player: {ugp_player_id}")
-        if not self.stream or self.stream.done:
+        stream = self.stream
+        if not stream or stream.done:
             raise web.HTTPNotFound(body=f"There is no active UGP stream for {ugp_player_id}!")
 
         output_format, output_format_str = resolve_ugp_output_format(
@@ -864,15 +982,16 @@ class UniversalGroupPlayer(Player):
         if child_player_id:
             output_plan = self.mass.streams.audio.get_player_output_plan(
                 child_player_id,
-                self.stream.input_format,
+                stream.input_format,
                 output_format,
-                queue_id=self.stream.queue_id,
-                session_id=self.stream.session_id,
+                queue_id=stream.queue_id,
+                session_id=stream.session_id,
             )
 
-        async for chunk in self.stream.get_stream(
+        async for chunk in stream.get_stream(
             output_format,
             filter_params=output_plan.filter_params if output_plan else None,
+            player_id=child_player_id,
         ):
             try:
                 await resp.write(chunk)

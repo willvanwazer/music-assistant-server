@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from ipaddress import ip_address
 from math import ceil
 from typing import TYPE_CHECKING, cast
+from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
 from aiofiles.os import wrap
@@ -1582,10 +1583,12 @@ class StreamsController(CoreController):
             ugp_player = cast("UniversalGroupPlayer", self.mass.players.get_player(media.source_id))
             ugp_stream = ugp_player.stream
             assert ugp_stream is not None  # for type checker
+            # the member the stream was sent to, which is not always the player that reads it
+            member_id = parse_qs(urlparse(media.uri).query).get("player_id", [None])[0]
             if ugp_stream.base_pcm_format == pcm_format:
                 # no conversion needed
-                return ugp_stream.subscribe_raw()
-            return ugp_stream.get_stream(output_format=pcm_format)
+                return ugp_stream.subscribe_raw(member_id)
+            return ugp_stream.get_stream(output_format=pcm_format, player_id=member_id)
         if (
             media.media_type == MediaType.AUDIO_SOURCE
             and not media.queue_item_id

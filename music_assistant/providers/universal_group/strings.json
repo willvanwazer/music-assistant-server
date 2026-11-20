@@ -1,7 +1,7 @@
 {
   "config_entries": {
     "ugp_note": {
-      "label": "Please note that although the Universal Group allows you to group any player, it will not (and can not) enable audio sync between players of different ecosystems. Members of the same ecosystem that support native grouping (for example several Sonos speakers) are grouped natively while the group plays, so they stay in sync with each other. It is advised to always use native player groups or sync groups when all players share an ecosystem and use the Universal Group only to group players of different ecosystems/protocols."
+      "label": "Please note that although the Universal Group allows you to group any player, it will not (and can not) enable audio sync between players of different ecosystems. Members of the same ecosystem that support native grouping (for example several Sonos speakers) are grouped natively while the group plays, so they stay in sync with each other. Members of different ecosystems are started on the same position of the stream, and a constant difference that remains between them can be evened out with the playback delay of each member below. It is advised to always use native player groups or sync groups when all players share an ecosystem and use the Universal Group only to group players of different ecosystems/protocols."
     },
     "ugp_output_format": {
       "label": "Output format for Universal Group playback",
@@ -19,6 +19,14 @@
     "dynamic_members": {
       "label": "Enable dynamic members",
       "description": "Allow members to (temporary) join/leave the group dynamically."
+    },
+    "ugp_start_cushion": {
+      "label": "Audio to hold before playback starts (seconds)",
+      "description": "Speakers start to play once their own buffer has filled. The group hands every member this much audio at once, so they all start at the same moment. Raise it when a member starts later than the others on sources that deliver audio just in time, such as radio or Spotify; those sources then take that much longer to start."
+    },
+    "ugp_member_delay": {
+      "label": "Playback delay for {0} (milliseconds)",
+      "description": "Play this member later than the rest of the group, to even out a member that is always ahead of the others. Applies to members that receive the group stream themselves; a member that follows another one through native grouping plays in sync with it."
     }
   },
   "manifest": {
